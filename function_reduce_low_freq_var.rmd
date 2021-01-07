@@ -1,0 +1,359 @@
+---
+title: "Optimize time lag & moving average window"
+author: "Mikaela M. Provost"
+date: "8/6/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Plan
+1. For each site, apply a large window moving average to get seasonal variation to raw SST and bottom data. 
+2. Identify the time lag that minimizes r^2.
+3. Using the time lag identified in step 2, calculate r^2 for a variety of small moving average windows (3-7 days).
+4. Plot: r^2 (y axis) vs window length (x axis)
+5. Identify the r^2 (and the corresponding window length) that is on the cusp of plateau line in plot
+6. Plot: time series of moving average with window corresponding to r^2 in step 5
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(grid)
+library(gridExtra)
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# read in data - bottom
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomfede <- d %>% group_by(Site,Date) %>% sample_n(1) %>% select(Site,Temperature,Date)# randomly select temp per day
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% 
+  select(Site,Temperature,Date)
+bottomall <- rbind(bottomfede,bottommppp)
+names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# read in data - SST
+m <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/morroprieto_temp.csv",stringsAsFactors = FALSE)
+p <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/puntaprieta_temp.csv",stringsAsFactors = FALSE)
+m$Site <- rep("Morro_Prieto")
+p$Site <- rep("Punta_Prieta")
+p$datetime <- as.Date(p$datetime,format="%m/%d/%Y") #more fun with dates
+m$datetime <- as.Date(m$datetime,format="%m/%d/%Y") #I hate dates
+file_names <- list.files(path = "C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop/",
+                file_names[f],"_temp.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$datetime <- as.Date(SSTfede$datetime,format="%d-%b-%Y") #date problems
+SSTall <- bind_rows(p,m,SSTfede)
+SSTall <- SSTall %>% select(datetime,temp,Site,flag)
+names(SSTall)[names(SSTall)=="datetime"] <- "Date"
+names(SSTall)[names(SSTall)=="temp"] <- "temp_sst"
+rm(f,m,p,SSTfede,filesL,file_names)
+
+# standardize site location names
+# export the site names from each dataset, manually rearrange in excel and read back in
+# bsites <- unique(bottomall$Site)
+# Ssites <- unique(SSTall$Site) 
+# siteskey <- cbind(bsites,Ssites)
+# write.csv(siteskey,file="C:/Users/Mikaela/Documents/GitHub/natividad/data/siteskey.csv")
+# rm(bsites,Ssites,siteskey)
+sitekey <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+sitekey <- sitekey[complete.cases(sitekey),]
+SSTall$bsite <- sitekey[match(SSTall$Site,sitekey$Ssites),"bsites"]
+bottomall$Ssite <- sitekey[match(bottomall$Site,sitekey$bsites),"Ssites"] 
+
+# keep same dates
+combo <- left_join(SSTall,bottomall,by=c("Date"="Date","Site"="Ssite"))
+combo <- combo[complete.cases(combo),]
+combo <- combo %>% select(Date,temp_sst,Site,temp_bottom)
+rm(sitekey,bottomall,SSTall)
+
+
+# (0) for each site
+temp_pL <- as.list(rep(NA,length=length(unique(combo$Site))))
+r2_pL <- as.list(rep(NA,length=length(unique(combo$Site))))
+best_lags <- as.data.frame(matrix(rep(NA,length=length(unique(combo$Site))*2),
+                                        nrow=length(unique(combo$Site)),
+                                        ncol=2))
+names(best_lags) <- c("dayslag","site")
+lags = seq(from=15,to=45, by=1)
+
+for(s in 1:length(unique(combo$Site))){ # for each site
+
+# (1) apply large moving average window to capture seasal variation
+  dd <- combo[combo$Site==unique(combo$Site)[s],]
+
+  # plot raw -- bottom
+  b <- ggplot(data=dd,aes(x=Date,y=temp_bottom)) +
+    geom_line() + xlab("date") + ylab("T") + 
+    geom_smooth(se=FALSE,n=length(dd$Date)) 
+  # get data for large moving average window -- bottom
+  b1 <- ggplot_build(b)$data[[2]]
+  
+  # plot raw -- bottom
+  t <- ggplot(data=dd,aes(x=Date,y=temp_sst)) +
+    geom_line() + xlab("date") + ylab("T") +  
+    geom_smooth(se=FALSE,n=length(dd$Date)) 
+  # get data for large moving average window -- bottom
+  t1 <- ggplot_build(t)$data[[2]]
+  
+  # prep to find best lag time
+  r2 <- rep(NA,length=length(lags))
+  # search for time lag
+  for(L in 1:length(lags)){
+    # make empty d for lag temps
+    columns <-  c("datet","datetn","Tt_sst","Ttn_bottom","site")
+    d <- data.frame(matrix(NA,nrow=(length(t1$y)-lags[L]),ncol=length(columns)))
+    names(d) <- columns
+    rm(columns)
+    # fill in d
+    d$datet <- dd$Date[1:(length(dd$Date)-lags[L])]
+    d$datetn <- dd$Date[(lags[L]+1):length(dd$Date)]
+    d$Tt_sst <- t1$y[1:(length(dd$temp_sst)-lags[L])] #SST at t
+    d$Ttn_bottom <- b1$y[(lags[L]+1):length(b1$y)] #bottom at t+n
+    d$site <- rep(dd$Ste[1])
+    #plot(x=d$Tt_sst,y=d$Ttn_bottom)
+    r2[L] <- summary(lm(d$Ttn_bottom ~ d$Tt_sst))$r.squared
+  }
+  lagdf <- as.data.frame(cbind(lags,r2))
+  #plot(x=lagdf$lags,y=lagdf$r2)
+  best_lags$dayslag[s] <- lagdf[lagdf$r2==max(lagdf$r2),]$lags
+  best_lags$site[s] <- dd$Site[1]
+  
+  # save temp plots with window info
+  temp_pL[[s]] <- ggplot(data=dd) + 
+    geom_line(aes(x=Date,y=temp_sst,color="SST")) +
+    geom_smooth(aes(x=Date,y=temp_sst,color="SST"),se=F) +
+    geom_line(aes(x=Date,y=temp_bottom,color="bottom")) +
+    geom_smooth(aes(x=Date,y=temp_bottom,color="bottom"),se=F) +
+    ggtitle(paste(dd$Site[1])) + 
+    theme(axis.text.x = element_text(angle = 45,hjust=1),legend.position="none") +
+    ylab("") + xlab("")
+  
+  # time lag vs r^2 
+  r2_pL[[s]] <- ggplot(data=lagdf,aes(x=lags,y=r2)) + 
+    geom_point() +
+    xlab("") + ylab("") + 
+    ggtitle(paste(dd$Site[1]))
+  
+}
+rm(b,b1,t,t1,d,dd,lagdf,L,s,r2,lags)
+# tiff(file='C:/Users/Mikaela/Documents/GitHub/natividad/plots/sst_bottom/raw_temps.tiff', 
+#      units="in", width=7, height=14, res=300) 
+# do.call(grid.arrange,c(temp_pL,ncol=2,left="",bottom=""))
+# dev.off()
+# 
+# tiff(file='C:/Users/Mikaela/Documents/GitHub/natividad/plots/sst_bottom/lags_r2.tiff', 
+#      units="in", width=7, height=14, res=300) 
+# do.call(grid.arrange,c(r2_pL,ncol=2,left="",bottom=""))
+# dev.off()
+
+
+```
+
+### Fig 1. Raw SST and bottom temperature at each site with large moving window
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=14, fig.width=8}
+do.call(grid.arrange,c(temp_pL,ncol=2,left="Tempertaure",bottom=""))
+```
+
+### Fig 2. r2 for different time lags at each site
+
+I tested 15-45 day time lags for each site.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=14, fig.width=8}
+do.call(grid.arrange,c(r2_pL,ncol=2,left="r2 (bottom ~ SST)", bottom="Time lag (days)"))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# for each site, run through different moving average windows
+windows <- c(3,4,5,6,7,8,9)
+ma <- function(x, n = 2){stats::filter(x, rep(1 / n, n), sides = 2)}
+pL <- as.list(rep(NA,length=length(unique(combo$Site))))
+
+
+for(s in 1:length(unique(combo$Site))){
+  dd <- combo[combo$Site==unique(combo$Site)[s],]
+  df <- as.data.frame(matrix(rep(NA,length=length(windows)*3),
+                                        nrow=length(windows),
+                                        ncol=3))
+  names(df) <- c("site","movingw","r2")
+  for(w in 1:length(windows)){
+    t <- ma(x=dd$temp_sst,n=windows[w])
+    b <- ma(x=dd$temp_bottom,n=windows[w])
+    d <- as.data.frame(cbind(dd$Date,t,b))
+    sst <- d$t[1:(length(d$b)-best_lags[best_lags$site==dd$Site[1],]$dayslag)] #SST at t
+    bottom <- d$b[(best_lags[best_lags$site==dd$Site[1],]$dayslag+1):length(d$b)] #bottom at t+n
+    # r2, window, and site 
+    df$r2[w] <- summary(lm(bottom ~ sst))$r.squared
+    df$movingw[w] <- windows[w]
+    df$site[w] <- dd$Site[1]
+  }
+  diffs <- diff(df$r2)
+  
+  pL[[s]]<- ggplot(data=df,aes(x=movingw,y=r2)) + 
+    geom_point() + geom_line() + xlab("") + ylab("") + 
+    ggtitle(paste(dd$Site[1]," (",windows[match(min(diffs),diffs)],")",sep="")) + 
+    geom_vline(xintercept =  windows[match(min(diffs),diffs)],linetype="dashed")
+}
+rm(t,b,d,sst,bottom,df,s,dd,w)
+
+
+```
+
+### Fig 3. r2 between SST and bottom temperature for different moving average windows
+
+I use site-specific time lags when calculating r2. I tested these windows: `r windows`
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=14, fig.width=8}
+do.call(grid.arrange,c(pL,ncol=2,left="r2 (bottom ~ SST)",bottom="Moving average window (days)"))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+rm(windows)
+ma <- function(x, n = 2){stats::filter(x, rep(1 / n, n), sides = 2)}
+plot_lag_with_6dayL <- as.list(rep(NA,length=unique(combo$Site)))
+
+for(s in 1:length(unique(combo$Site))){
+  dd <- combo[combo$Site==unique(combo$Site)[s],]
+  
+  t <- ma(x=dd$temp_sst,n=6)
+  b <- ma(x=dd$temp_bottom,n=6)
+  d <- as.data.frame(cbind(dd$Date,t,b))
+  sst <- d$t[1:(length(d$b)-best_lags[best_lags$site==dd$Site[1],]$dayslag)] #SST at t
+  bottom <- d$b[(best_lags[best_lags$site==dd$Site[1],]$dayslag+1):length(d$b)] #bottom at t+n
+  day <- seq(from=1,to=length(sst),by=1)
+  dplot <- as.data.frame(cbind(day,sst,bottom))
+  dplot <- dplot[complete.cases(dplot),]
+   
+  plot_lag_with_6dayL[[s]]<- ggplot(data=dplot) + 
+    geom_line(aes(x=day,y=sst,color="sst")) +
+    geom_line(aes(x=day,y=bottom,color="bottom")) +
+    xlab("") + ylab("") + 
+    theme(legend.position="none") +
+    ggtitle(paste(dd$Site[1]))   
+}
+rm(dd,t,b,d,sst,bottom,day,dplot,s)
+```  
+ 
+### Fig 4. Six day moving average window & adjusted time lag for each site
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=14, fig.width=7}
+do.call(grid.arrange,c(plot_lag_with_6dayL,ncol=2,left="Temperature",bottom="Day Index"))
+``` 
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# plot spectrum of raw SST, bottom
+# plot spectrum of moving average SST, bottom with 6 day window
+# setting 'span' - a vector of odd integers to specify the smoothers
+ma <- function(x, n = 2){stats::filter(x, rep(1 / n, n), sides = 2)}
+span.multiplier = 1
+specplots <- as.list(rep(NA,length=length(unique(combo$Site))))
+names(specplots) <- unique(combo$Site)
+
+for(s in 1:length(specplots)){
+  # subset to a site
+  dd <- combo[combo$Site==unique(combo$Site)[s],]
+    # square root time series length
+  tmp <- ceiling(sqrt(length(1:length(dd$temp_bottom)))) #sq root of timeseries lgth, rounded
+  if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} #make it odd, if the square root is even
+  m = m * span.multiplier
+  
+  # sst raw spec
+  sp1 <- spec.pgram(dd$temp_sst,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  p1 <- ggplot() + geom_line(aes(x=sp1$freq,y=log10(sp1$spec))) +
+    ggtitle("raw SST ") + xlab("freq")
+  
+  # bottom raw spec
+  sp2 <- spec.pgram(dd$temp_bottom,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  p2 <- ggplot() + geom_line(aes(x=sp2$freq,y=log10(sp2$spec))) +
+    ggtitle("raw bottom ") + xlab("freq")
+  
+  # sst smooth spec
+  sstS <- ma(dd$temp_sst,n=6)
+  sstS <- sstS[!is.na(sstS)]
+  sp3 <- spec.pgram(sstS,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  p3 <- ggplot() + geom_line(aes(x=sp3$freq,y=log10(sp3$spec))) +
+    ggtitle("smooth SST") + xlab("freq")
+  #ggtitle(paste(dd$Site[1]," - smooth SST ",sep="")) + xlab("freq")
+  
+  # bottom smooth spec
+  bottomS <- ma(dd$temp_bottom,n=6)
+  bottomS <- bottomS[!is.na(bottomS)]
+  sp4 <- spec.pgram(bottomS,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  p4 <- ggplot() + geom_line(aes(x=sp4$freq,y=log10(sp4$spec))) +
+    ggtitle("smooth bottom ") + xlab("freq")
+  
+  siteplots <- list(p1,p2,p3,p4)
+  
+  specplots[[s]] <- siteplots
+  
+}
+
+```
+
+### Spectrums
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[1]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[1])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[2]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[2])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[3]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[3])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[4]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[4])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[5]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[5])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[6]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[6])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[7]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[7])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[8]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[8])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[9]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[9])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[10]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[10])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[11]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[11])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[12]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[12])))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+do.call(grid.arrange,c(specplots[[13]],ncol=2,left="",bottom="",top=paste(unique(combo$Site)[13])))
+```

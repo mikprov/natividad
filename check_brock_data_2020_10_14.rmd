@@ -1,0 +1,432 @@
+---
+title: "Check SST data"
+author: "Mikaela M. Provost"
+date: "10/14/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+library(pracma)
+library(viridis)
+library(lemon)
+library(lubridate)
+library(zoo)
+
+
+# load functions --> ***** CHECK for MG or MP *****
+source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+
+# # Plan
+# 1. For each site, check if site-specific temperature offset and 2.5 deg C offset has different impacts on stress time series.
+# 2. See if depth correlates with site-specific average offset.
+# 3. Check to see if variance in bottom temperature correlates with variance in SST. Does variance correlate for each month? We might expect SST and bottom temperature to be less correlated during upwelling.
+# 4. Quantify amount of variance at high frequencies in bottom temperature. Add this variance to smoothed SST time series.
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in data -- #
+
+# read in data - bottom
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomfede <- d %>% group_by(Site,Date) %>% sample_n(1) %>% 
+  dplyr::select(Site,Temperature,Date)# randomly select temp per day
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>%
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>%
+  group_by(Site,Date) %>%
+  sample_n(1) %>%
+  dplyr::select(Site,Temperature,Date)
+bottomall <- rbind(bottomfede,bottommppp)
+names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# read in data - SST
+m <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/morroprieto_temp.csv",stringsAsFactors = FALSE)
+p <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/puntaprieta_temp.csv",stringsAsFactors = FALSE)
+m$Site <- rep("Morro_Prieto")
+p$Site <- rep("Punta_Prieta")
+p$datetime <- as.Date(p$datetime,format="%m/%d/%Y") #more fun with dates
+m$datetime <- as.Date(m$datetime,format="%m/%d/%Y") #I hate dates
+file_names <- list.files(path = "C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop/",
+                file_names[f],"_temp.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$datetime <- as.Date(SSTfede$datetime,format="%d-%b-%Y") #date problems
+SSTall <- bind_rows(p,m,SSTfede)
+SSTall <- SSTall %>% dplyr::select(datetime,temp,Site,flag)
+names(SSTall)[names(SSTall)=="datetime"] <- "Date"
+names(SSTall)[names(SSTall)=="temp"] <- "temp_sst"
+
+rm(f,m,p,filesL,file_names)
+
+# standardize site location names
+sitekey <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+sitekey <- sitekey[complete.cases(sitekey),]
+SSTall$bsite <- sitekey[match(SSTall$Site,sitekey$Ssites),"bsites"]
+```
+
+```{r}
+# ---
+# 30 day smoothers
+# ---
+
+
+# add column for just raw data (NA where no raw data)
+# Flag is 0 if the points are data, 1 if point is estimated.
+SSTall$temp_sst_raw <- rep(NA,length=length(SSTall[,1]))
+SSTall$temp_sst_raw <- ifelse(SSTall$flag < 1, SSTall$temp_sst, "NA")
+SSTall$temp_sst_raw <- as.numeric(as.character(SSTall$temp_sst_raw))
+
+# create day index key
+SSTall <- SSTall %>%
+          mutate(year = year(Date),
+                 month = month(Date),
+                 day = day(Date),
+                 julian_day = yday(Date))
+
+
+# apply 30 day smoother to SST data
+smoothingwindow=29
+site_vector <- unique(SSTall$Site)
+SSTall$temp_smooth <- rep(0,length=length(SSTall[,1]))
+SSTall$temp_smooth_raw <- rep(0,length=length(SSTall[,1]))
+for(s in 1:length(site_vector) ){
+  
+  # smooth over raw + interpolated 
+  SSTall[SSTall$Site == site_vector[s],]$temp_smooth <- 
+    ma(SSTall[SSTall$Site == site_vector[s],]$temp_sst,n=smoothingwindow)
+  
+  # smooth over raw
+  SSTall[SSTall$Site == site_vector[s],]$temp_smooth_raw <- 
+    ma(SSTall[SSTall$Site == site_vector[s],]$temp_sst_raw,n=smoothingwindow)
+
+  
+}
+
+# checking
+table(SSTfede$Site)
+table(SSTall$Site)
+head(m)
+
+plot_this_site <- "Rincon"
+ggplot() +
+  geom_point(data=SSTfede[SSTfede$Site == plot_this_site &
+                          SSTfede$flag == 0 &
+                          SSTfede$datetime < "2003-05-01",], 
+             aes(x=datetime,y=temp,color="from Brock\n(temp)\n")) +
+  
+  geom_point(data=SSTall[SSTall$Site == plot_this_site &
+                         SSTall$flag == 0 &
+                         SSTall$Date < "2003-05-01",], 
+             aes(x=Date,y=temp_sst,color="SSTall\n(temp_sst)"),size=0.5) +
+  
+  ggtitle("only observed SST (Bocanita)\nJan-April 2003")
+
+ggplot() +
+  geom_point(data=SSTfede[SSTfede$Site == plot_this_site &
+                          SSTfede$datetime < "2003-05-01",], 
+             aes(x=datetime,y=temp,color="from Brock\n(temp)\n")) +
+  
+  geom_point(data=SSTall[SSTall$Site == plot_this_site &
+                         SSTall$Date < "2003-05-01",], 
+             aes(x=Date,y=temp_sst,color="SSTall\n(temp_sst)"),size=0.5) +
+  
+  ggtitle("observed & interpolated SST \nJan-April 2003")
+
+head(m)
+
+ggplot() +
+  geom_point(data=m[m$datetime <"2003-05-01",], 
+             aes(x=datetime,y=temp,color="from Brock\n(temp)\n")) +
+  
+  geom_point(data=SSTall[SSTall$Site == "Morro_Prieto" &
+                         SSTall$Date < "2003-05-01",], 
+             aes(x=Date,y=temp_sst,color="SSTall\n(temp_sst)"),size=0.5) +
+  
+  ggtitle("observed & interpolated SST \nJan-April 2003")
+
+
+
+ggplot() +
+  geom_point(data=SSTfede[SSTfede$Site == plot_this_site &
+                          SSTfede$datetime < "2003-05-01",], 
+             aes(x=datetime,y=temp_clim,color="from Brock\n(temp_clim)\n")) +
+  geom_point(data=SSTall[SSTall$Site == plot_this_site &
+                         SSTall$Date < "2003-05-01",], 
+             aes(x=Date,y=temp_smooth,color="SSTall\n(temp_smooth)\n"),size=0.3) +
+   geom_point(data=SSTall[SSTall$Site == plot_this_site &
+                         SSTall$Date < "2003-05-01",], 
+             aes(x=Date,y=temp_smooth_raw,color="SSTall\n(temp_smooth_raw)"),size=0.2) +
+  ggtitle("30 day smooth using observed data only (Bocanita)\nJan-April 2003")
+
+```
+
+```{r}
+# ---
+# variance in SST deviations 
+# ---
+
+
+# subtract seasonal trend from temps, get deviations
+SSTall$temp_dev <- rep(0,length=length(SSTall[,1]))
+SSTall$temp_dev_raw <- rep(0,length=length(SSTall[,1]))
+for(s in 1:length(site_vector) ){
+  # dev in raw + interpolated
+  SSTall[SSTall$Site == site_vector[s],]$temp_dev <- 
+    SSTall[SSTall$Site == site_vector[s],]$temp_sst - SSTall[SSTall$Site == site_vector[s],]$temp_smooth
+  # dev in raw 
+  SSTall[SSTall$Site == site_vector[s],]$temp_dev_raw <- 
+    SSTall[SSTall$Site == site_vector[s],]$temp_sst_raw - SSTall[SSTall$Site == site_vector[s],]$temp_smooth_raw
+}
+
+# store mean annual variance for each site in SSTvar
+SSTvar <- data.frame(
+  Site = site_vector,
+  mean_annual_var_SST = rep(NA,length=length(site_vector)),
+  mean_annual_var_raw_SST = rep(NA,length=length(site_vector))
+)
+
+
+# calculate var in devations for each site-year
+for(s in 1:length(site_vector)){ # for each site
+  
+  # store variance per year in v (these will be averaged)
+  years <- unique(SSTall[SSTall$Site==site_vector[s],]$year)
+  v     <- rep(NA,length=length(years))
+  v_raw <- rep(NA,length=length(years))
+  
+  for(y in 1:length(years)){ # for each year, calculate variance in deviations
+    
+    # raw + interpolated
+    v[y] <- var(SSTall[SSTall$Site==site_vector[s] & SSTall$year==years[y],]$temp_dev,na.rm=TRUE)
+    
+    # raw 
+    v_raw[y] <- var(SSTall[SSTall$Site==site_vector[s] & SSTall$year==years[y],]$temp_dev_raw,na.rm = TRUE)
+  }
+  # average the variance values from all years for each site
+  SSTvar[SSTvar$Site==site_vector[s],]$mean_annual_var_SST <- mean(v)
+  SSTvar[SSTvar$Site==site_vector[s],]$mean_annual_var_raw_SST <- mean(v_raw)
+  rm(v,years,v_raw)
+}
+
+combo <- bottomall
+
+#write.csv(SSTall, file="C:/Users/Mikaela/Documents/GitHub/natividad/data/SSTall2.csv")
+#write.csv(SSTvar, file="C:/Users/Mikaela/Documents/GitHub/natividad/data/regression2.csv")
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=35}
+# ---
+# 18 plots: observed SST data (not flagged) & smoothed line over obs data
+# ---
+site_vector <- unique(SSTall$Site)
+p <- as.list(rep(NA,length=length(site_vector)))
+for(s in 1:length(site_vector)){
+  d <- SSTall[SSTall$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_point(aes(x=Date,y=temp_sst_raw,color="raw")) +
+    geom_line(aes(x=Date,y=temp_smooth_raw,color="smooth")) +
+    ggtitle(paste(site_vector[s])) +
+    xlab("temp") + ylab("date")
+}
+do.call(grid.arrange,c(p,ncol=2))
+```
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------------------------
+# Calculate high freq variance in bottom (using 10 min data)
+# ---------------------------------------------------------------
+
+# read in data - bottom fedecoop
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+colnames(d)[colnames(d) == "UTC_DateTime"] <- "UTC_Date_Time"
+bottomfede <- d %>% dplyr::select(Site,Temperature,Date,UTC_Date_Time)
+
+# read in data - bottom mm & mp
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$Date,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  dplyr::select(Site,Temperature,Date,UTC_Date_Time)
+bottomall <- rbind(bottomfede,bottommppp)
+colnames(bottomall)[colnames(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# standardize site location names
+bottomall$Ssite <- sitekey[match(bottomall$Site,sitekey$bsites),"Site"] 
+bottomall$Site <- NULL
+colnames(bottomall)[colnames(bottomall)=="Ssite"] <- "Site"
+
+
+# ----------
+# -- spectrums -- #
+# ----------
+sampleinterval = 10/(10*6*24)
+site_vector <- unique(bottomall$Site)
+
+pBR <- as.list(rep(NA,length=length(site_vector)))
+pBRlog <- as.list(rep(NA,length=length(site_vector)))
+regressiondf <- data.frame(
+  Site = site_vector,
+  highvar_bottom = rep(NA,length=length(site_vector)))
+
+for(s in 1:length(site_vector)){ #for each site
+  
+  # subset to site
+  d <- bottomall[bottomall$Site == site_vector[s],]
+  
+  # SST spectrum 
+  spR <- spec.pgram(d$temp_bottom,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  
+  spRdf <- data.frame(
+    freq = spR$freq/sampleinterval,
+    freq1 = spR$freq,
+    spec = spR$spec*(spR$freq/sampleinterval),
+    spec1 = spR$spec)
+  
+  # store plots
+  pBRlog[[s]] <- ggplot(data=spRdf,aes(x=log10(freq),y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("log10(freq (1/day))") + ylab("log10(spec*freq)") +
+    theme(legend.position="none") 
+  
+  pBR[[s]] <- ggplot(data=spRdf[spRdf$freq < 10,],aes(x=freq,y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("freq (1/day)") + ylab("log10(spec*freq)") +
+    theme(legend.position="none") 
+  
+  regressiondf[regressiondf$Site == site_vector[s],]$highvar_bottom <- 
+    trapz(x=spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25 ,]$freq1,
+          y=spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25 ,]$spec1 * 2)
+  
+    #sum(spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25,]$spec1 * min(spRdf$freq)) 
+}
+rm(spRdf,d,s,spR,site_vector)
+regressiondf
+
+```
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---
+# Plot regression
+# ---
+#save_regressiondf <- regressiondf
+regressdf1 <- left_join(regressiondf,SSTvar)
+regressdf2 <- left_join(regressdf1,sitekey)
+regressdf2 
+regressiondf <- regressdf2
+
+#write.csv(regressiondf, file="C:/Users/Mikaela/Documents/GitHub/natividad/data/regression.csv")
+
+regressiondf_sub <- regressiondf[!regressiondf$brock_plot==0,]
+regressiondf_sub3 <- regressiondf[!regressiondf$bsites %in% c("PuntaPrieta","Monterey"),]
+
+m1 <- lm(regressiondf$mean_annual_var_raw ~ regressiondf$highvar_bottom) #all sites
+m2 <- lm(regressiondf_sub$mean_annual_var ~ regressiondf_sub$highvar_bottom) #brock sites
+m3 <- lm(regressiondf_sub3$mean_annual_var_raw ~ regressiondf_sub3$highvar_bottom) #not PP & Monterey
+
+
+lm_eqn_mean <- function(df){ # function to paste regression & r2 on plot
+  x = df$highvar_bottom
+  y = df$mean_annual_var
+    m <- lm(y ~ x, df);
+    eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq)); }
+
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=5, fig.height=6}
+ggplot(data=regressiondf,aes(x=highvar_bottom, y=mean_annual_var)) +
+  geom_point() +
+  geom_abline(slope=m2$coefficients[2],intercept = m2$coefficients[1]) +
+  theme_classic() +
+  #xlim(0,0.6) + ylim(0,0.5) +
+  geom_text(x = 0.4, 
+            y = 0.7, 
+            label = lm_eqn_mean(regressiondf_sub), parse = TRUE) +
+  xlab("bottom var [C^2]") +
+  ylab("SST var [C^2] (raw data only)") +
+  geom_text_repel(data=regressiondf[!regressiondf$Site %in% regressiondf_sub$Site,],
+                  aes(x=highvar_bottom, y=mean_annual_var,label = bsites),
+                  color="blue",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  geom_text_repel(data=regressiondf_sub,
+                  aes(x=highvar_bottom, y=mean_annual_var,label = bsites),
+                  color="darkgrey",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  ggtitle("Blue sites not in Brock's plot (not included in regression)\n")
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=5, fig.height=6}
+
+ggplot(data=regressiondf,aes(x=highvar_bottom, y=mean_annual_var_raw)) +
+  ggtitle("Blue sites not in regression\n") +
+  geom_point() +
+  geom_abline(slope=m2$coefficients[2],intercept = m2$coefficients[1]) +
+  theme_classic() +
+  xlab("bottom var [C^2]") +
+  ylab("SST var [C^2] (raw data only)") +
+  # regression with brock sites only
+  geom_text(x = 0.4, 
+            y = 0.7, 
+            label = lm_eqn_mean(regressiondf_sub), parse = TRUE) +
+  
+  geom_text_repel(data=regressiondf[!regressiondf$Site %in% regressiondf_sub$Site,],
+                  aes(x=highvar_bottom, y=mean_annual_var_raw,label = bsites),
+                  color="blue",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  geom_text_repel(data=regressiondf_sub,
+                  aes(x=highvar_bottom, y=mean_annual_var_raw,label = bsites),
+                  color="darkgrey",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) 
+  
+
+
+```
+
+
+
+
+

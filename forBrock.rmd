@@ -1,0 +1,238 @@
+---
+title: "Optimize time lag & moving average window:\n AR model & temperature spectra"
+author: "Mikaela M. Provost"
+date: "8/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Plan
+0. Read in data
+1. For each site, plot spectra of raw data. 10 min bottom, daily grab bottom, SST daily
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(grid)
+library(gridExtra)
+library(cowplot)
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in data -- #
+
+# read in data - bottom
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomfede <- d %>% group_by(Site,Date) %>% sample_n(1) %>% select(Site,Temperature,Date)# randomly select temp per day
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% 
+  select(Site,Temperature,Date)
+bottomall <- rbind(bottomfede,bottommppp)
+names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# read in data - SST
+m <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/morroprieto_temp.csv",stringsAsFactors = FALSE)
+p <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/puntaprieta_temp.csv",stringsAsFactors = FALSE)
+m$Site <- rep("Morro_Prieto")
+p$Site <- rep("Punta_Prieta")
+p$datetime <- as.Date(p$datetime,format="%m/%d/%Y") #more fun with dates
+m$datetime <- as.Date(m$datetime,format="%m/%d/%Y") #I hate dates
+file_names <- list.files(path = "C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop/",
+                file_names[f],"_temp.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$datetime <- as.Date(SSTfede$datetime,format="%d-%b-%Y") #date problems
+SSTall <- bind_rows(p,m,SSTfede)
+SSTall <- SSTall %>% select(datetime,temp,Site,flag)
+names(SSTall)[names(SSTall)=="datetime"] <- "Date"
+names(SSTall)[names(SSTall)=="temp"] <- "temp_sst"
+rm(f,m,p,SSTfede,filesL,file_names)
+
+# standardize site location names
+sitekey <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+sitekey <- sitekey[complete.cases(sitekey),]
+SSTall$bsite <- sitekey[match(SSTall$Site,sitekey$Ssites),"bsites"]
+bottomall$Ssite <- sitekey[match(bottomall$Site,sitekey$bsites),"Ssites"] 
+
+# keep same dates
+combo <- left_join(SSTall,bottomall,by=c("Date"="Date","Site"="Ssite"))
+combo <- combo[complete.cases(combo),]
+combo <- combo %>% select(Date,temp_sst,Site,temp_bottom)
+rm(sitekey,bottomall,SSTall)
+```
+
+
+
+### Fig 1.  Plot spectra of raw data. (a) 10 min bottom, (b) daily grab bottom, (c) SST daily
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# read in 10 min interval data
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  select(Site,Temperature,Date,UTC_Date_Time,Year)
+bottom10 <- bottommppp
+rm(d1,bottommppp)
+
+
+# -- Morro Prieto prep to plot spectrum -- #
+
+# m = the square root of the time series length, if it is even number make odd
+tmp <- ceiling(sqrt(length(1:length(bottom10[bottom10$Site=="MorroPrieto",]$Temperature)))) 
+if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+span.multiplier = 1
+m = m * span.multiplier
+sampleinterval <- 10/1440 # 10 min/total min in day = obs. interval in terms of days
+
+# -- calc spectrum -- #
+
+spR <- spec.pgram(bottom10[bottom10$Site=="MorroPrieto",]$Temperature,
+                  spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+spS <- spec.pgram(bottom10[bottom10$Site=="MorroPrieto",]$Temperature,
+                  spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+
+#raw spec and freq
+spRdf <- as.data.frame(cbind((spR$freq/sampleinterval), (spR$spec*(spR$freq/sampleinterval)) ))
+colnames(spRdf) <- c("spx","spy")
+#convert freq axis to cycles per unit time (days), multiply power by freq 
+spSdf <- as.data.frame(cbind(spS$freq/sampleinterval, spS$spec*(spS$freq/sampleinterval) ))
+colnames(spSdf) <- c("spx","spy")
+
+# -- plot spectrum -- #
+
+p1 <- ggplot(data=spRdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Morro Prieto - not smoothed ") + 
+  xlab("freq (units = cycles per day)")
+  
+p2 <- ggplot(data=spSdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Morro Prieto - smoothed ") + 
+  xlab("freq (units = cycles per day)") +
+  ylab("log10(spec)*freq")
+
+```
+
+#### Fig 1(a) Spectra of 10 min data (should be similar to Fig 3a in Woodson et al 2018)
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=8}
+plot_grid(p1,p2,ncol=2)
+rm(p1,p2,spR,spS,spRdf,spSdf,tmp,m)
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Punta Prieta prep to plot spectrum -- #
+
+# m = the square root of the time series length, if it is even number make odd
+tmp <- ceiling(sqrt(length(1:length(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature)))) 
+if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+span.multiplier = 1
+m = m * span.multiplier
+sampleinterval <- 10/1440 # 10 min/total min in day = obs. interval in terms of days
+
+# -- calc spectrum -- #
+
+spR <- spec.pgram(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature,
+                  spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+spS <- spec.pgram(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature,
+                  spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+
+#raw spec and freq
+spRdf <- as.data.frame(cbind((spR$freq/sampleinterval), (spR$spec*(spR$freq/sampleinterval)) ))
+colnames(spRdf) <- c("spx","spy")
+#convert freq axis to cycles per unit time (days), multiply power by freq 
+spSdf <- as.data.frame(cbind(spS$freq/sampleinterval, spS$spec*(spS$freq/sampleinterval) ))
+colnames(spSdf) <- c("spx","spy")
+
+# -- plot spectrum -- #
+
+p1 <- ggplot(data=spRdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Punta Prieta - spectra of 10 min data ") + 
+  xlab("freq (units = cycles per day)")
+  
+p2 <- ggplot(data=spSdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Punta Prieta - spectra of 10 min data ") + 
+  xlab("freq (units = cycles per day)") +
+  ylab("log10(spec)*freq")
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=8}
+plot_grid(p1,p2,ncol=2)
+rm(spR,spS,spRdf,spSdf,tmp,m,p1,p2,sampleinterval)
+```
+
+#### Fig 1(b) Spectra of daily grabs of bottom temp
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+sampleinterval = 1
+pBR <- as.list(rep(NA,length=length(unique(combo$Site))))
+pBS <- as.list(rep(NA,length=length(unique(combo$Site))))
+pSR <- as.list(rep(NA,length=length(unique(combo$Site))))
+pSS <- as.list(rep(NA,length=length(unique(combo$Site))))
+
+for(s in 1:length(unique(combo$Site))){ #for each site
+  # subset to site
+  d <- combo[combo$Site == unique(combo$Site)[s],]
+  
+  # find the span 
+  tmp <- ceiling(sqrt(length(1:length(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature)))) 
+  if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+  span.multiplier = 1
+  m = m * span.multiplier
+  
+  # bottom spectrum - raw, smoothed
+  spBR <- spec.pgram(d$temp_bottom,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  spBS <- spec.pgram(d$temp_bottom,spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+  spBRdf <- as.data.frame(cbind((spBR$freq/sampleinterval),(spBR$spec*(spBR$freq/sampleinterval))))
+  spBSdf <- as.data.frame(cbind((spBS$freq/sampleinterval),(spBS$spec*(spBS$freq/sampleinterval))))
+  colnames(spBRdf) <- c("spx","spy")
+  colnames(spBSdf) <- c("spx","spy")
+
+  # SST spectrum - raw, smoothed
+  spSR <- spec.pgram(d$temp_sst,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  spSS <- spec.pgram(d$temp_sst,spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+  spSRdf <- as.data.frame(cbind((spSR$freq/sampleinterval),(spSR$spec*(spSR$freq/sampleinterval))))
+  spSSdf <- as.data.frame(cbind((spSS$freq/sampleinterval),(spSS$spec*(spSS$freq/sampleinterval))))
+  colnames(spSRdf) <- c("spx","spy")
+  colnames(spSSdf ) <- c("spx","spy")
+  
+  # store plots
+  pBR[[s]] <- ggplot(data=spBRdf,aes(x=spy,y=spy)) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - bottom T",sep="")) +
+    xlab("freq (1/days)") + ylab("log10(spec)*freq")
+  pBS[[s]] <- ggplot(data=spBSdf,aes(x=spx,y=spy)) + 
+    geom_line() + ggtitle(paste(d$Site[1],"- bottom T (smoothed)")) +
+    xlab("freq (1/days)") + ylab("log10(spec)*freq")
+  pSR[[s]] <- ggplot(data=spSRdf,aes(x=spx,y=spy)) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - SST",sep="")) +
+    xlab("freq (1/days)") + ylab("log10(spec)*freq")
+  pSS[[s]] <- ggplot(data=spSSdf,aes(x=spx,y=spy)) + 
+    geom_line() + ggtitle(paste(d$Site[1],"- SST (smoothed)")) +
+    xlab("freq (1/days)") + ylab("log10(spec)*freq")
+}
+rm(spBR,spBS,spSR,spSS,m,d,s,tmp,spBRdf,spBSdf,spSRdf,spSSdf)
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=6, fig.width=7}
+plot_grid(pBR[[1]],pSR[[1]],ncol=2)
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=6, fig.width=7}
+plot_grid(pBR[[2]],pSR[[2]],ncol=2)
+```
+

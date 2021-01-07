@@ -1,0 +1,426 @@
+---
+title: "Variance Regression"
+author: "Mikaela M. Provost"
+date: "9/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+library(pracma)
+library(viridis)
+library(lemon)
+library(lubridate)
+
+
+#install.packages('viridis')
+
+# load functions --> ***** CHECK for MG or MP *****
+source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+
+# # Plan
+# 1. For each site, check if site-specific temperature offset and 2.5 deg C offset has different impacts on stress time series.
+# 2. See if depth correlates with site-specific average offset.
+# 3. Check to see if variance in bottom temperature correlates with variance in SST. Does variance correlate for each month? We might expect SST and bottom temperature to be less correlated during upwelling.
+# 4. Quantify amount of variance at high frequencies in bottom temperature. Add this variance to smoothed SST time series.
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in data -- #
+
+# read in data - bottom
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomfede <- d %>% group_by(Site,Date) %>% sample_n(1) %>% select(Site,Temperature,Date)# randomly select temp per day
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% 
+  select(Site,Temperature,Date)
+bottomall <- rbind(bottomfede,bottommppp)
+names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# read in data - SST
+m <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/morroprieto_temp.csv",stringsAsFactors = FALSE)
+p <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/puntaprieta_temp.csv",stringsAsFactors = FALSE)
+m$Site <- rep("Morro_Prieto")
+p$Site <- rep("Punta_Prieta")
+p$datetime <- as.Date(p$datetime,format="%m/%d/%Y") #more fun with dates
+m$datetime <- as.Date(m$datetime,format="%m/%d/%Y") #I hate dates
+file_names <- list.files(path = "C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop/",
+                file_names[f],"_temp.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$datetime <- as.Date(SSTfede$datetime,format="%d-%b-%Y") #date problems
+SSTall <- bind_rows(p,m,SSTfede)
+SSTall <- SSTall %>% select(datetime,temp,Site,flag)
+names(SSTall)[names(SSTall)=="datetime"] <- "Date"
+names(SSTall)[names(SSTall)=="temp"] <- "temp_sst"
+rm(f,m,p,SSTfede,filesL,file_names)
+
+# standardize site location names
+sitekey <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+sitekey <- sitekey[complete.cases(sitekey),]
+SSTall$bsite <- sitekey[match(SSTall$Site,sitekey$Ssites),"bsites"]
+bottomall$Ssite <- sitekey[match(bottomall$Site,sitekey$bsites),"Ssites"] 
+bottomall$Site <- NULL
+colnames(bottomall)[colnames(bottomall)=="Ssite"] <- "Site"
+
+# create day index key
+SSTall <- SSTall %>%
+          mutate(year = year(Date),
+                 month = month(Date),
+                 day = day(Date),
+                 julian_day = yday(Date),
+                 year.index = if_else(month == 1 & day == 1, 1, 0))
+# avg temp per julian day
+SSTyr <- SSTall %>% group_by(Site,julian_day) %>% summarise(temp_sst_julian = mean(temp_sst))
+SSTyr <- as.data.frame(SSTyr)
+# add julian day to bottom df
+bottomall <- bottomall %>% mutate( julian_day = yday(Date))
+# col for mean sst per julian day
+bottomall$temp_sstyr <- rep(0,length=length(bottomall[,1]))
+bottomall <- as.data.frame(bottomall)
+
+# add SST/julian day to bottomall. 
+# this is the average temperature per julian day over 10 years
+sites_vector <- unique(bottomall$Site)
+for(s in 1:length(sites_vector)){ #for each site
+  
+  # get list of julian days for when we have bottom temp
+  jul_days_this_site <- sort( unique(bottomall[bottomall$Site== sites_vector[s],]$julian_day) ,decreasing=FALSE)
+  
+  for(j in 1:length(jul_days_this_site)){ #for each julian day
+    
+    # fill in averaged sst
+    bottomall[bottomall$Site == sites_vector[s] & 
+              bottomall$julian_day==jul_days_this_site[j],]$temp_sstyr <-
+      
+      SSTyr[SSTyr$Site==sites_vector[s] & 
+            SSTyr$julian_day == jul_days_this_site[j],]$temp_sst_julian
+  }
+}
+rm(s,j,jul_days_this_site,sites_vector)
+colnames(bottomall)[colnames(bottomall)=="temp_sstyr"] <- "temp_sst"
+combo <- bottomall
+rm(SSTall,SSTyr,bottomall)
+```
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------------------------
+# Calculate high freq variance in bottom (using 10 min data)
+# ---------------------------------------------------------------
+
+# read in data - bottom fedecoop
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+colnames(d)[colnames(d) == "UTC_DateTime"] <- "UTC_Date_Time"
+bottomfede <- d %>% select(Site,Temperature,Date,UTC_Date_Time)
+
+# read in data - bottom mm & mp
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$Date,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  select(Site,Temperature,Date,UTC_Date_Time)
+bottomall <- rbind(bottomfede,bottommppp)
+colnames(bottomall)[colnames(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# standardize site location names
+bottomall$Ssite <- sitekey[match(bottomall$Site,sitekey$bsites),"Ssites"] 
+bottomall$Site <- NULL
+colnames(bottomall)[colnames(bottomall)=="Ssite"] <- "Site"
+
+# assign factor levels
+bottomall$Site <- factor(bottomall$Site,levels=levels(combo$Site))
+
+# ----------
+# -- spectrums -- #
+# ----------
+sampleinterval = 10/(10*6*24)
+pBR <- as.list(rep(NA,length=length(levels(bottomall$Site))))
+pBRlog <- as.list(rep(NA,length=length(levels(bottomall$Site))))
+regressiondf <- data.frame(
+  Site = levels(bottomall$Site),
+  highvar_bottom = rep(NA,length=length(levels(bottomall$Site))),
+  highvar_sst = rep(NA,length=length(levels(bottomall$Site))))
+
+for(s in 1:length(levels(bottomall$Site))){ #for each site
+  
+  # subset to site
+  d <- bottomall[bottomall$Site == levels(bottomall$Site)[s],]
+  
+  # SST spectrum 
+  spR <- spec.pgram(d$temp_bottom,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  
+  spRdf <- data.frame(
+    freq = spR$freq/sampleinterval,
+    freq1 = spR$freq,
+    spec = spR$spec*(spR$freq/sampleinterval),
+    spec1 = spR$spec)
+  
+  # store plots
+  pBRlog[[s]] <- ggplot(data=spRdf,aes(x=log10(freq),y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("log10(freq (1/day))") + ylab("log10(spec*freq)") +
+    theme(legend.position="none") 
+  
+  pBR[[s]] <- ggplot(data=spRdf[spRdf$freq < 10,],aes(x=freq,y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("freq (1/day)") + ylab("log10(spec*freq)") +
+    theme(legend.position="none") 
+  
+  regressiondf[regressiondf$Site == levels(bottomall$Site)[s],]$highvar_bottom <- 
+    trapz(x=spRdf[spRdf$freq > 0.75 ,]$freq1,
+          y=spRdf[spRdf$freq > 0.75 ,]$spec1 * 2)
+  
+    #sum(spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25,]$spec1 * min(spRdf$freq)) 
+  
+}
+rm(spRdf,d,s,spR)
+
+
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------------------------
+# Create mSST (add columns to combo df)
+# ---------------------------------------------------------------
+smoothingwindow=30
+
+#combosave <- combo
+#combo <- combosave
+pDev <- as.list(rep(NA,length(levels(combo$site))))
+combo$smoothSST <- rep(NA,length=length(combo[,1]))
+combo$SSTdeviations <- rep(NA,length=length(combo[,1])) # just the high frequency variability in SST
+
+for(s in 1:length(levels(combo$Site))){
+  
+  dd <- combo[combo$Site==levels(combo$Site)[s],]
+  dd$smoothSST <- as.numeric(ma(dd$temp_sst,n=smoothingwindow)) # smooth SST with 30 day window
+  dd$SSTdeviations <- as.numeric((dd$temp_sst - dd$smooth)) # remove seasonal variation
+  
+  pDev[[s]] <- ggplot(data=dd) +
+    geom_line(aes(x=Date,y=temp_sst)) +
+    geom_line(aes(x=Date,y=smoothSST)) +
+    geom_line(aes(x=Date,y=SSTdeviations)) +
+    ggtitle(paste(dd$Site[1])) +
+    ylim(-4,28) +
+    ylab("Temperature") + xlab("Date")
+  
+  combo[combo$Site==levels(combo$Site)[s],]$smoothSST <- # add smoothed SST to combo
+    dd[match(combo[combo$Site==levels(combo$Site)[s],]$Date,dd$Date),"smoothSST"]
+  combo[combo$Site==levels(combo$Site)[s],]$SSTdeviations <- # add col of SST deviations 
+    dd[match(combo[combo$Site==levels(combo$Site)[s],]$Date,dd$Date),"SSTdeviations"]
+  
+  regressiondf[regressiondf$Site == levels(bottomall$Site)[s],]$highvar_sst <- 
+    var(dd$SSTdeviations,na.rm=TRUE) # variance of SST deviations
+  
+}
+```
+
+### Fig 1. High frequency variance regression
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=6, fig.height=5}
+# Plot regression
+#regressionsdf_sub <- regressiondf[!regressiondf$Site %in% c("El_Rosario","Bahia_Vizcaino","Morro_Prieto"),]
+
+regressionsdf_sub <- regressiondf
+
+HFlm_1 <- lm(regressiondf$highvar_bottom ~ regressiondf$highvar_sst)
+HFlm_2 <- lm(regressionsdf_sub$highvar_bottom ~ regressionsdf_sub$highvar_sst)
+
+
+lm_eqn <- function(df){ # function to paste regression & r2 on plot
+  x = df$highvar_sst
+  y = df$highvar_bottom
+    m <- lm(y ~ x, df);
+    eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq)); }
+
+
+
+ggplot(data=regressiondf,aes(x=highvar_sst, y=highvar_bottom)) +
+  geom_point() +
+  #ggtitle(paste("Frequencies= ",minfreq,"-",maxfreq,sep="")) +
+  geom_abline(slope=HFlm_1$coefficients[2],intercept = HFlm_1$coefficients[1],lty="dashed",color="blue") +
+  geom_abline(slope=HFlm_2$coefficients[2],intercept = HFlm_2$coefficients[1]) +
+  theme_classic() +
+  #xlim(0,0.6) + ylim(0,1) +
+  geom_text(x = 0.2, y = 8, label = lm_eqn(regressionsdf_sub), parse = TRUE) +
+  geom_text(x = 0.2, y = 7, label = lm_eqn(regressiondf), parse = TRUE, color="blue") +
+  ylab("bottom var [C^2]") +
+  xlab("SST var [C^2]") +
+  geom_text_repel(data=regressiondf[!regressiondf$Site %in% regressionsdf_sub$Site,],
+                  aes(x=highvar_sst, y=highvar_bottom,label = Site),
+                  color="blue",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  geom_text_repel(data=regressionsdf_sub,
+                  aes(x=highvar_sst, y=highvar_bottom,label = Site),
+                  color="black",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) 
+  
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+summary(HFlm_1)
+summary(HFlm_2)
+```
+
+### Fig 2. Removing seasonal trend in SST
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=35}
+do.call(grid.arrange,c(pDev,ncol=2))
+```
+
+### Fig 3. Spectra of 10 min bottom temperature
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=35}
+do.call(grid.arrange,c(pBR,ncol=2))
+```
+
+### Fig 4. Spectra of 10 min bottom temperature (x-axis log10 scale)
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=35}
+do.call(grid.arrange,c(pBRlog,ncol=2))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+lagtime = 30
+smoothingwindow=30
+site_offsets <- calc_offset(lagtime=lagtime,combo=combo,smoothingwindow=smoothingwindow)
+
+
+combo$smoothbot <- rep(NA,length=length(combo[,1]))
+combo$mSST_sitespecificoffset <- rep(NA,length=length(combo[,1]))
+combo$mSST_2.5offset <- rep(NA,length=length(combo[,1]))
+combo$sitespecificoffset <- rep(NA,length=length(combo[,1]))
+combo$offset2.5  <- rep(2.5,length=length(combo[,1]))
+combo$highfreqnoise <- rep(NA,length=length(combo[,1]))
+combo$mSST_2.5_addhighfreqnoise <- rep(NA,length=length(combo[,1]))
+
+
+
+mtsplots <- as.list(rep(NA,length=length(levels(combo$Site))))
+checkmeans <- data.frame( Site=levels(combo$Site), whitenoisemean=rep(NA,length(levels(combo$Site))))
+
+for(s in 1:length(levels(combo$Site))){
+  
+  dd <- combo[combo$Site==levels(combo$Site)[s],]
+ 
+  # smooth temp with 30 day window
+  dd$smoothSST <- ma(dd$temp_sst,n=smoothingwindow)
+  dd$smoothbot <- ma(dd$temp_bottom,n=smoothingwindow)
+  
+  # shift smooth SST 30 days ahead
+  dd$smoothlagSST <- shift(dd$smoothSST,lagtime)
+  
+  # difference between smooth bottom & lagged smSST
+  dd$diff_in_smoothed <- as.numeric(dd$smoothlagSST - dd$smoothbot)
+  
+  # (offset 1) smoothed SST w/30 day lag and w/temperature offset
+  dd$sitespecificoffset <- 
+    rep(site_offsets[site_offsets$Site==levels(combo$Site)[s],]$mean_diff,length=length(dd[,1]))
+  dd$smoothlagoffSST <- dd$smoothlagSST - dd$sitespecificoffset
+  
+  # (offset 2) smooth SST w/30 day lag & w/standard temp offset (offset=2.5)
+  dd$smoothlagoffSST2.5 <- dd$smoothlagSST - dd$offset2.5  
+  
+  # calc deviations in bottom T (difference between raw bottom and smoothed)
+  dd$bottom_dev <- as.numeric(dd$temp_bottom - dd$smoothbot)
+  
+  # add bottom deviations to smoothed-lagged SST
+  dd$mSST_sitespecificoffset <- as.numeric(dd$smoothlagoffSST + dd$bottom_dev)
+  dd$mSST_2.5offset <- as.numeric(dd$smoothlagoffSST2.5 + dd$bottom_dev)
+  
+  # add columns for high freq noise, adjusted sst var = a*slope + b
+  sp <- spec.pgram(dd$temp_sst,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE) #spectrum of sst
+  spdf <- data.frame(freq = sp$freq,spec = sp$spec) 
+  
+  # integrate over high freqs, feed into regression
+  ssthfv <- trapz(x=spdf[spdf$freq > 0.75 ,]$freq,
+                  y=spdf[spdf$freq > 0.75 ,]$spec ) * 2
+  ssthfv_adj <- as.numeric(HFlm_1$coefficients[2] * ssthfv + HFlm_1$coefficients[1])
+  
+  set.seed(5)
+  dd$highfreqnoise <- rnorm(n=length(dd$Date),mean=0,sd=sqrt(ssthfv_adj))
+  
+  checkmeans[checkmeans$Site==levels(combo$Site)[s],]$whitenoisemean <- 
+    mean(dd$highfreqnoise) #check white noise mean=0
+
+  # add mSST column: smoothed SST + 2.5 offset + high freq white noise
+  dd$mSST_2.5_addhighfreqnoise <- dd$smoothlagoffSST2.5 + dd$highfreqnoise
+  
+  # merge new cols from dd into combo df
+  combo[combo$Site==levels(combo$Site)[s],]$smoothbot <- # smoothed bottom
+    dd[match(combo[combo$Site==levels(combo$Site)[s],]$Date,dd$Date),"smoothbot"]
+  combo[combo$Site==levels(combo$Site)[s],]$mSST_sitespecificoffset <- # mSST w/site specific offset
+    dd[match(combo[combo$Site==levels(combo$Site)[s],]$Date,dd$Date),"mSST_sitespecificoffset"]
+  combo[combo$Site==levels(combo$Site)[s],]$mSST_2.5offset <- # mSST w/2.5 offset
+    dd[match(combo[combo$Site==levels(combo$Site)[s],]$Date,dd$Date),"mSST_2.5offset"]
+  combo[combo$Site==levels(combo$Site)[s],]$sitespecificoffset <- # site specific offsets
+    rep(dd$sitespecificoffset[1],length=length(combo[combo$Site==levels(combo$Site)[s],1]))
+  combo[combo$Site==levels(combo$Site)[s],]$highfreqnoise <- # high freq white noise 
+    dd[match(combo[combo$Site==levels(combo$Site)[s],]$Date,dd$Date),"highfreqnoise"]
+  combo[combo$Site==levels(combo$Site)[s],]$mSST_2.5_addhighfreqnoise <- # mSST = smooth SST + 2.5 + highfreq noise
+    dd[match(combo[combo$Site==levels(combo$Site)[s],]$Date,dd$Date),"mSST_2.5_addhighfreqnoise"]
+ 
+  
+  # plot mSST & bottom temp time series
+  mtsplots[[s]] <-
+  ggplot(data=dd) +
+    geom_line(aes(x=Date,y=temp_bottom, color="Bottom")) + 
+    #geom_line(aes(x=Date,y=smoothbot,color="Bottom smoothed")) +
+    geom_line(aes(x=Date,y=mSST_2.5_addhighfreqnoise,color="mSST_2.5_addhighfreqnoise")) +
+    #geom_line(aes(x=Date,y=smoothlagoffSST,color="mSST smoothed")) + 
+    ggtitle(paste(levels(combo$Site)[s])) + 
+    #geom_line(aes(x=Date,y=temp_sst,color="SST")) +
+    labs(y = "Temperature", x="Date", color="") + 
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust=1)) 
+  #+scale_color_manual(values = colors)
+  
+}  
+rm(s,dd,lagtime,smoothingwindow,ssthfv,ssthfv_adj,sp,spdf)
+```
+
+### Fig 5. mSST using the better fit regression
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=35}
+do.call(grid.arrange,c(mtsplots,ncol=2))
+```
+

@@ -1,0 +1,442 @@
+---
+title: "Check SST data"
+author: "Mikaela M. Provost"
+date: "10/19/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+library(pracma)
+library(viridis)
+library(lemon)
+library(lubridate)
+library(zoo)
+library(tidyverse)
+
+
+#install.packages('viridis')
+
+# load functions --> ***** CHECK for MG or MP *****
+source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+
+# # Plan
+# 1. For each site, check if site-specific temperature offset and 2.5 deg C offset has different impacts on stress time series.
+# 2. See if depth correlates with site-specific average offset.
+# 3. Check to see if variance in bottom temperature correlates with variance in SST. Does variance correlate for each month? We might expect SST and bottom temperature to be less correlated during upwelling.
+# 4. Quantify amount of variance at high frequencies in bottom temperature. Add this variance to smoothed SST time series.
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in data -- #
+
+# read in data - SST
+file_names <- list.files(path = "C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop1",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop1/",
+                file_names[f],"_temp.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$Date <- as.Date(SSTfede$Date,format="%m/%d/%Y") #date problems
+SSTfede <- SSTfede %>% mutate(year = year(Date))
+
+# --------------------------------------
+# Try Brock's climatology for regression
+# --------------------------------------
+site_vector <- unique(SSTfede$Site)
+years <- unique(SSTfede$year)
+variance_reg <- data.frame(
+  Site = site_vector,
+  variance_SST = rep(NA,length=length(site_vector)))
+
+ggplot() + 
+  geom_line(data=SSTfede[SSTfede$Site=="Bocanita" & SSTfede$year=='2003',],
+            aes(x=Date,y=Climatology,color="climatology")) +
+  geom_line(data=SSTfede[SSTfede$Site=="Bocanita" & SSTfede$year=='2003',],
+            aes(x=Date,y=Temperature,color="Temperature")) +
+  geom_point(data=SSTfede[SSTfede$Site=="Bocanita" & SSTfede$year=='2003',],
+            aes(x=Date,y=temp_sst_raw,color="Temp_observation")) 
+  
+SSTfede$dev_10 <- SSTfede$Climatology - SSTfede$temp_sst_raw
+
+for(s in 1:length(site_vector)){ #for each site
+  var_years <- rep(NA,length(years))
+  
+  for(y in 1:length(years)){ #step through each year
+    var_years[y] <- # calculate variance for that year-site
+    var(SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[y], ]$dev_10,na.rm=TRUE)
+  }
+  variance_reg[variance_reg$Site==site_vector[s],]$variance_SST <- 
+    mean(var_years) # average variances across years per site
+}
+
+
+# 3) fill in df with variance in deviations using only sst observations
+for(s in 1:length(site_vector)){ 
+  for(y in 1:length(years)){
+    variance_yrly[variance_yrly$Site==site_vector[s] & variance_yrly$year==years[y],]$variance <- 
+      var(SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[y],]$dev_yrly,na.rm=TRUE)
+  }
+}
+
+
+
+
+# add column for just raw data (NA where no raw data)
+# Flag is 0 if the points are data, 1 if point is estimated.
+SSTfede$temp_sst_raw <- rep(NA,length=length(SSTfede[,1]))
+SSTfede$temp_sst_raw <- ifelse(SSTfede$flag < 1, SSTfede$Temperature, "NA")
+SSTfede$temp_sst_raw <- as.numeric(as.character(SSTfede$temp_sst_raw))
+
+# apply 60 smoother for each site-year
+site_vector <- unique(SSTfede$Site)
+years <- unique(SSTfede$year)
+SSTfede$smooth_yrly <- rep(NA,length=length(SSTfede[,1]))
+for(s in 1:length(site_vector)){
+  for(y in 1:length(years)){
+    SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[y],]$smooth_yrly <- 
+      rollmean(SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[y],]$temp_sst_raw, k=59,na.rm=TRUE,fill=NA)
+      
+    
+  }
+}
+
+# Goal: calculate variance at high frequencies using SST obs and smoothed SST (over each year)
+# 1) get deviations, SST obs - smoothed = deviations
+SSTfede$dev_yrly <- SSTfede$temp_sst_raw - SSTfede$smooth_yrly
+
+# 2) make df w/cols: site, year, variance
+# variance = var(deviations in each site-year)
+variance_yrly <- data.frame(
+  Site = rep(site_vector,times=length(years)),
+  year = rep(NA,length=length(site_vector)*length(years))   )
+for(s in 1:length(site_vector)){
+  variance_yrly[variance_yrly$Site == site_vector[s],]$year <- years  }
+variance_yrly$variance <- rep(NA)
+
+
+# 3) fill in df with variance in deviations using only sst observations
+for(s in 1:length(site_vector)){ 
+  for(y in 1:length(years)){
+    variance_yrly[variance_yrly$Site==site_vector[s] & variance_yrly$year==years[y],]$variance <- 
+      var(SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[y],]$dev_yrly,na.rm=TRUE)
+  }
+}
+
+# 4) use variance per site-year to generat random values for missing observations
+SSTfede$dev_yrly_fill <- SSTfede$dev_yrly # fill in sst for days we have
+sitesL <- as.list(rep(NA,length=length(site_vector)))
+names(sitesL) <- site_vector
+
+for(s in 1:length(site_vector)){
+  
+  all_years_for_one_siteL <- as.list(rep(NA,length=length(years)))
+  names(all_years_for_one_siteL) <- years
+  
+  for(y in 1:length(years)){
+    d = SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[y],]
+    dna = d[is.na(d$dev_yrly_fill),]
+    dnums = d[!is.na(d$dev_yrly_fill),]
+    devs <- rnorm(n=length(dna[,1]),mean=0,
+                  sd=sqrt(variance_yrly[variance_yrly$Site==site_vector[s] &
+                                        variance_yrly$year==years[y],]$variance))
+    dna$dev_yrly_fill <- devs
+    d <- bind_rows(dnums,dna)
+    all_years_for_one_siteL[[y]] <- d
+  }
+  yy <- bind_rows(all_years_for_one_siteL,.id='id')
+  yy <- arrange(yy,year,Date)
+  yy$temp_raw_filled_yrly <- yy$smooth_yrly + yy$dev_yrly_fill
+  yy$id <- NULL
+  sitesL[[s]] <- yy
+  rm(d,dna,dnums,devs,all_years_for_one_siteL,yy)
+  
+}
+
+SSTall <- bind_rows(sitesL,.id='id')
+SSTall <- arrange(SSTall,year,Site,Date)
+rm(sitesL)
+SSTall[1:50,]
+
+# 5) need to fix this part where I check for outliers and replace with new values
+# are there any filled in temps >40 or <8?
+which(SSTall$temp_raw_filled_yrly > 40)
+which(SSTall$temp_raw_filled_yrly < 8)    
+
+# 6) smooth over entire 10 yr period, 60 day window
+SSTall$smooth_10 <- rep(NA,length=length(SSTall[,1]))
+for(s in 1:length(site_vector)){
+  SSTall[SSTall$Site==site_vector[s],]$smooth_10 <- 
+      rollmean(SSTall[SSTall$Site==site_vector[s] ,]$temp_raw_filled_yrly, k=59,na.rm=TRUE,fill=NA)
+}
+SSTall[1:50,]
+
+# 7) calc deviations using 10 year smoothing
+SSTall$dev_10 <- SSTall$smooth_10 - SSTall$temp_raw_filled_yrly
+
+# 8) calculate variance per site-year using
+# deviations between obs SST and 10 year smoothing
+# average variance across years for each site
+variance_yrly_avg <- data.frame(
+  Site= site_vector,
+  variance= rep(NA,length(site_vector)))
+
+for (s in 1:length(site_vector)){ #for each site
+  var_years <- rep(NA,length(years))
+  for (y in 1:length(years)){ #step through each year
+    var_years[y] <- # calculate variance for that year-site
+    var(SSTall[SSTall$Site==site_vector[s] & SSTall$flag==0 & SSTall$year==years[y], ]$dev_10,na.rm = TRUE)
+  }
+  variance_yrly_avg[variance_yrly_avg$Site==site_vector[s],]$variance <- 
+    mean(var_years) # average variances across years per site
+}
+head(SSTall)
+SSTall[1:50,]
+
+
+ggplot() +
+  geom_line(data=SSTall[SSTall$Site=="Bocanita" & SSTall$year=='2003',],
+            aes(x=Date,y=Climatology),color="brock") +
+  geom_line(data=SSTall[SSTall$Site=="Bocanita" & SSTall$year=='2003',],
+            aes(x=Date,y=smooth_10),color='mikaela') 
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=35}
+site_vector <- unique(SSTall$Site)
+p <- as.list(rep(NA,length=length(site_vector)))
+for(s in 1:length(site_vector)){
+  d <- SSTall[SSTall$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_point(aes(x=Date,y=temp_sst_raw,color="raw")) +
+    geom_line(aes(x=Date,y=temp_smooth_raw,color="smooth")) +
+    ggtitle(paste(site_vector[s])) +
+    xlab("temp") + ylab("date")
+}
+do.call(grid.arrange,c(p,ncol=2))
+```
+
+```{r}
+head(SSTall)
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# =============================================
+# Process bottom data to get high freq variance
+# =============================================
+
+
+# ---------------------------------------------------------------
+# Calculate high freq variance in bottom (using 10 min data)
+# ---------------------------------------------------------------
+
+# read in data - bottom fedecoop
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+colnames(d)[colnames(d) == "UTC_DateTime"] <- "UTC_Date_Time"
+bottomfede <- d %>% dplyr::select(Site,Temperature,Date,UTC_Date_Time)
+
+# read in data - bottom mm & mp
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$Date,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  dplyr::select(Site,Temperature,Date,UTC_Date_Time)
+bottomall <- rbind(bottomfede,bottommppp)
+colnames(bottomall)[colnames(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+table(bottomall$Site)
+
+
+
+# ----------
+# -- spectrums -- #
+# ----------
+sampleinterval = 10/(10*6*24)
+site_vector <- unique(bottomall$Site)
+
+pBR <- as.list(rep(NA,length=length(site_vector)))
+pBRlog <- as.list(rep(NA,length=length(site_vector)))
+regressiondf <- data.frame(
+  Site = site_vector,
+  highvar_bottom = rep(NA,length=length(site_vector)))
+
+for(s in 1:length(site_vector)){ #for each site
+  
+  # subset to site
+  d <- bottomall[bottomall$Site == site_vector[s],]
+  
+  # SST spectrum 
+  spR <- spec.pgram(d$temp_bottom,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  
+  spRdf <- data.frame(
+    freq = spR$freq/sampleinterval,
+    freq1 = spR$freq,
+    spec = spR$spec*(spR$freq/sampleinterval),
+    spec1 = spR$spec)
+  
+  # store plots
+  pBRlog[[s]] <- ggplot(data=spRdf,aes(x=log10(freq),y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("log10(freq (1/day))") + ylab("log10(spec*freq)") +
+    theme(legend.position="none") 
+  
+  pBR[[s]] <- ggplot(data=spRdf[spRdf$freq < 10,],aes(x=freq,y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("freq (1/day)") + ylab("log10(spec*freq)") +
+    theme(legend.position="none") 
+  
+  regressiondf[regressiondf$Site == site_vector[s],]$highvar_bottom <-
+    trapz(x=spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25 ,]$freq1,
+          y=spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25 ,]$spec1 * 2)
+  
+  # regressiondf[regressiondf$Site == site_vector[s],]$highvar_bottom <- 
+  #   trapz(x=spRdf[spRdf$freq > 0.1 ,]$freq1,
+  #         y=spRdf[spRdf$freq > 0.1 ,]$spec1 * 2)
+  
+    #sum(spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25,]$spec1 * min(spRdf$freq)) 
+}
+rm(spRdf,d,s,spR,site_vector)
+
+
+```
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# Plot regression
+variance_yrly_avg <- variance_reg
+regdf <- left_join(regressiondf,variance_yrly_avg)
+sitekey <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+colnames(sitekey)[colnames(sitekey)=="bsites"] <- "Site"
+sitekey$Ssites <- NULL
+regdf <- left_join(regdf,sitekey)
+
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=5, fig.height=6}
+ggplot(data=regdf,aes(x=highvar_bottom, y=variance_SST)) +
+  geom_point() +
+  #geom_abline(slope=m1$coefficients[2],intercept = m1$coefficients[1]) +
+  theme_classic() +
+  #xlim(0,0.6) + ylim(0,0.5) +
+  # geom_text(x = 0.4, 
+  #           y = 0.7, 
+  #           label = lm_eqn_mean(regdf_sub), parse = TRUE) +
+  xlab("bottom var [C^2]") +
+  ylab("SST var [C^2] (in SST obs - 10 yr smoothing)") +
+  geom_text_repel(data=regdf,
+                  aes(x=highvar_bottom, y=variance_SST,label = Site),
+                  color="black",
+                  segment.color = "black",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  ggtitle("No regression line")
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# add regression line, leaving out sites that are in bays
+
+#regdf_sub <- regdf[!regdf$brock_plot==0,]
+regdf_sub <- regdf[!regdf$Site %in% c("PuntaPrieta","Monterey","PuntaNorte"),]
+
+
+m1 <- lm(regdf$variance_SST ~ regdf$highvar_bottom)
+m2 <- lm(regdf_sub$variance_SST ~ regdf_sub$highvar_bottom)
+
+
+lm_eqn_mean <- function(df){ # function to paste regression & r2 on plot
+  x = df$highvar_bottom
+  y = df$variance_SST
+    m <- lm(y ~ x, df);
+    eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq)); }
+
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=5, fig.height=6}
+ggplot(data=regdf,aes(x=highvar_bottom, y=variance_SST)) +
+  geom_point() +
+  geom_abline(slope=m2$coefficients[2],intercept = m2$coefficients[1]) +
+  theme_classic() +
+  #xlim(0,0.6) + ylim(0,0.5) +
+  geom_text(x = 0.4, 
+            y = 0.7, 
+            label = lm_eqn_mean(regdf_sub), parse = TRUE) +
+  xlab("bottom var [C^2]") +
+  ylab("SST var [C^2] (in SST obs - 10 yr smoothing)") +
+  geom_text_repel(data=regdf[!regdf$Site %in% regdf_sub$Site,],
+                  aes(x=highvar_bottom, y=variance_SST,label = Site),
+                  color="blue",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  geom_text_repel(data=regdf_sub,
+                  aes(x=highvar_bottom, y=variance_SST,label = Site),
+                  color="darkgrey",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  ggtitle("Blue not included in regression")
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=5, fig.height=6}
+
+ggplot(data=regdf,aes(x=highvar_bottom, y=variance)) +
+  geom_point() +
+  geom_abline(slope=m2$coefficients[2],intercept = m2$coefficients[1]) +
+  theme_classic() +
+  #xlim(0,0.6) + ylim(0,0.5) +
+  geom_text(x = 0.4, 
+            y = 0.7, 
+            label = lm_eqn_mean(regdf_sub), parse = TRUE) +
+  xlab("bottom var [C^2]") +
+  ylab("SST var [C^2] (in SST obs - 10 yr smoothing)") +
+  geom_text_repel(data=regdf[!regdf$Site %in% regdf_sub$Site,],
+                  aes(x=highvar_bottom, y=variance,label = Site),
+                  color="blue",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  geom_text_repel(data=regdf_sub,
+                  aes(x=highvar_bottom, y=variance,label = Site),
+                  color="darkgrey",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  ggtitle("Blue sites not in regression")
+
+
+```
+
+
+
+
+

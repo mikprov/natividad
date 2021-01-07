@@ -1,0 +1,459 @@
+---
+title: "Modified SST & Comparing Spectra"
+author: "Mikaela M. Provost"
+date: "8/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(grid)
+library(gridExtra)
+library(cowplot)
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in data -- #
+
+# read in data - bottom
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomfede <- d %>% group_by(Site,Date) %>% sample_n(1) %>% select(Site,Temperature,Date)# randomly select temp per day
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% 
+  select(Site,Temperature,Date)
+bottomall <- rbind(bottomfede,bottommppp)
+names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# read in data - SST
+m <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/morroprieto_temp.csv",stringsAsFactors = FALSE)
+p <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/puntaprieta_temp.csv",stringsAsFactors = FALSE)
+m$Site <- rep("Morro_Prieto")
+p$Site <- rep("Punta_Prieta")
+p$datetime <- as.Date(p$datetime,format="%m/%d/%Y") #more fun with dates
+m$datetime <- as.Date(m$datetime,format="%m/%d/%Y") #I hate dates
+file_names <- list.files(path = "C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop/",
+                file_names[f],"_temp.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$datetime <- as.Date(SSTfede$datetime,format="%d-%b-%Y") #date problems
+SSTall <- bind_rows(p,m,SSTfede)
+SSTall <- SSTall %>% select(datetime,temp,Site,flag)
+names(SSTall)[names(SSTall)=="datetime"] <- "Date"
+names(SSTall)[names(SSTall)=="temp"] <- "temp_sst"
+rm(f,m,p,SSTfede,filesL,file_names)
+
+# standardize site location names
+sitekey <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+sitekey <- sitekey[complete.cases(sitekey),]
+SSTall$bsite <- sitekey[match(SSTall$Site,sitekey$Ssites),"bsites"]
+bottomall$Ssite <- sitekey[match(bottomall$Site,sitekey$bsites),"Ssites"] 
+
+# keep same dates
+combo <- left_join(SSTall,bottomall,by=c("Date"="Date","Site"="Ssite"))
+combo <- combo[complete.cases(combo),]
+combo <- combo %>% select(Date,temp_sst,Site,temp_bottom)
+rm(sitekey,bottomall,SSTall)
+```
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# read in 10 min interval data
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  select(Site,Temperature,Date,UTC_Date_Time,Year)
+bottom10 <- bottommppp
+rm(d1,bottommppp)
+
+
+# -- Morro Prieto prep to plot spectrum -- #
+
+# m = the square root of the time series length, if it is even number make odd
+tmp <- ceiling(sqrt(length(1:length(bottom10[bottom10$Site=="MorroPrieto",]$Temperature)))) 
+if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+span.multiplier = 1
+m = m * span.multiplier
+sampleinterval <- 10/1440 # 10 min/total min in day = obs. interval in terms of days
+
+# -- calc spectrum -- #
+
+spR <- spec.pgram(bottom10[bottom10$Site=="MorroPrieto",]$Temperature,
+                  spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+spS <- spec.pgram(bottom10[bottom10$Site=="MorroPrieto",]$Temperature,
+                  spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+
+#raw spec and freq
+spRdf <- as.data.frame(cbind((spR$freq/sampleinterval), (spR$spec*(spR$freq/sampleinterval)) ))
+colnames(spRdf) <- c("spx","spy")
+#convert freq axis to cycles per unit time (days), multiply power by freq 
+spSdf <- as.data.frame(cbind(spS$freq/sampleinterval, spS$spec*(spS$freq/sampleinterval) ))
+colnames(spSdf) <- c("spx","spy")
+
+# -- plot spectrum -- #
+
+pMP10specraw <- ggplot(data=spRdf[1:5000,]) + geom_line(aes(x=(spx),y=log10(spy))) +
+  ggtitle("Morro Prieto ") + 
+  xlab("freq (units = cycles per day)") +
+  ylab("log10(spec)*freq")
+  
+pMP10specsmooth <- ggplot(data=spSdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Morro Prieto - smoothed ") + 
+  xlab("freq (units = cycles per day)") +
+  ylab("log10(spec)*freq")
+rm(spR,spS,spRdf,spSdf,tmp,m)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Punta Prieta prep to plot spectrum -- #
+
+# m = the square root of the time series length, if it is even number make odd
+tmp <- ceiling(sqrt(length(1:length(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature)))) 
+if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+span.multiplier = 1
+m = m * span.multiplier
+sampleinterval <- 10/1440 # 10 min/total min in day = obs. interval in terms of days
+
+# -- calc spectrum -- #
+
+spR <- spec.pgram(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature,
+                  spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+spS <- spec.pgram(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature,
+                  spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+
+#raw spec and freq
+spRdf <- as.data.frame(cbind((spR$freq/sampleinterval), (spR$spec*(spR$freq/sampleinterval)) ))
+colnames(spRdf) <- c("spx","spy")
+#convert freq axis to cycles per unit time (days), multiply power by freq 
+spSdf <- as.data.frame(cbind(spS$freq/sampleinterval, spS$spec*(spS$freq/sampleinterval) ))
+colnames(spSdf) <- c("spx","spy")
+
+# -- plot spectrum -- #
+
+pPP10specraw <- ggplot(data=spRdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Punta Prieta ") + 
+  xlab("freq (units = cycles per day)")
+  
+pPP10specsmooth <- ggplot(data=spSdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Punta Prieta - smoothed ") + 
+  xlab("freq (units = cycles per day)") +
+  ylab("log10(spec)*freq")
+rm(spR,spS,spRdf,spSdf,tmp,m,sampleinterval)
+```
+
+```{r include=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+sampleinterval = 1
+spPP <- spec.pgram(combo[combo$Site == "Punta_Prieta",]$temp_bottom,
+                  spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+spPPdf <- as.data.frame(cbind((spPP$freq/sampleinterval), (spPP$spec*(spPP$freq/sampleinterval)) ))
+colnames(spPPdf) <- c("spx","spy")
+spPPdf <- spPPdf[1:100,]
+
+pPPbottomspecplot <-
+   ggplot(data=spPPdf) + geom_line(aes(x=(1/spx),y=spy)) +
+   ggtitle("Punta Prieta (daily) ") + 
+   xlab("") +
+   ylab("spec*freq")
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# Spectra of daily bottom temp and SST
+colors <- c("Bottom" = "firebrick1", "Bottom smoothed" = "firebrick4", 
+              "mSST" = "deepskyblue1", "mSST smoothed" = "deepskyblue4",
+              "SST" = "dimgray")
+sampleinterval = 1
+span.multiplier = 1
+pBR <- as.list(rep(NA,length=length(unique(combo$Site))))
+pBS <- as.list(rep(NA,length=length(unique(combo$Site))))
+pSR <- as.list(rep(NA,length=length(unique(combo$Site))))
+pSS <- as.list(rep(NA,length=length(unique(combo$Site))))
+
+for(s in 1:length(unique(combo$Site))){ #for each site
+  # subset to site
+  d <- combo[combo$Site == unique(combo$Site)[s],]
+  
+  # find the span 
+  tmp <- ceiling(sqrt(length(1:length(d$Site)))) 
+  if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+  m = m * span.multiplier
+  
+  # bottom spectrum - raw, smoothed
+  spBR <- spec.pgram(d$temp_bottom,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  spBS <- spec.pgram(d$temp_bottom,spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+  spBRdf <- as.data.frame(cbind((spBR$freq/sampleinterval),
+                                (spBR$spec*(spBR$freq/sampleinterval))))
+  spBSdf <- as.data.frame(cbind((spBS$freq/sampleinterval),
+                                (spBS$spec*(spBS$freq/sampleinterval))))
+  colnames(spBRdf) <- c("spx","spy")
+  colnames(spBSdf) <- c("spx","spy")
+
+  
+  # SST spectrum - raw, smoothed
+  spSR <- spec.pgram(d$temp_sst,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  spSS <- spec.pgram(d$temp_sst,spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+  spSRdf <- as.data.frame(cbind((spSR$freq/sampleinterval),
+                                (spSR$spec*(spSR$freq/sampleinterval))))
+  spSSdf <- as.data.frame(cbind((spSS$freq/sampleinterval),
+                                (spSS$spec*(spSS$freq/sampleinterval))))
+  colnames(spSRdf) <- c("spx","spy")
+  colnames(spSSdf ) <- c("spx","spy")
+  
+  # store plots
+  pBR[[s]] <- ggplot(data=spBRdf,aes(x=(spx),y=spy,color="Bottom")) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - bottom T",sep="")) +
+    xlab("freq (1/days)") + ylab("spec*freq") +
+    scale_color_manual(values = colors) + theme(legend.position="none") 
+  
+  pBS[[s]] <- ggplot(data=spBSdf,aes(x=(spx),y=spy)) + 
+    geom_line() + ggtitle(paste(d$Site[1],"- bottom T (smoothed)")) +
+    xlab("freq (1/days)") + ylab("spec*freq") 
+  
+  pSR[[s]] <- ggplot(data=spSRdf,aes(x=(spx),y=spy,color="SST")) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - SST",sep="")) +
+    xlab("freq (1/days)") + ylab("spec*freq") +
+    scale_color_manual(values=colors) + theme(legend.position="none") 
+  
+  pSS[[s]] <- ggplot(data=spSSdf,aes(x=(spx),y=spy)) + 
+    geom_line() + ggtitle(paste(d$Site[1],"- SST (smoothed)")) +
+    xlab("freq (1/days)") + ylab("spec*freq")
+}
+rm(spBR,spBS,spSR,spSS,m,d,s,tmp,spBRdf,spBSdf,spSRdf,spSSdf)
+
+```
+
+## Fig 1. Spectra of 10 minute data
+
+Note about units: on the x-axis for the 10 minute spectra plots, I divided each frequency increment by the sampling interval. Since the interval is 10 minutes, and there are 1440 minutes in one day, the sampling interval is 10/1440. This changes the units to days.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=6, fig.width=9}
+plot_grid(pPP10specraw,pPP10specsmooth,pBR[[1]],
+          pMP10specraw,pMP10specsmooth,pBR[[2]],ncol=3)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# time lag in days between SST and bottom
+lags <- 30 
+
+# function to calc moving average: x=time series, n=window length
+ma <- function(x, n = 2){stats::filter(x, rep(1 / n, n), sides = 2)} 
+
+# function to shift daily T ahead: x=dataframe$colname, n=shift amount
+shift <- function(x, n){  c( rep(NA,n) , x[1:(length(x)-n)] )  }
+
+offsetavg <- rep(NA,length=length(unique(combo$Site)))
+offsetplots <- as.list(rep(NA,length=length(unique(combo$Site))))
+mtsplots <- as.list(rep(NA,length=length(unique(combo$Site))))
+mSSTspecplots <- as.list(rep(NA,length=length(unique(combo$Site))))
+
+
+# adjust SST time series with lag
+for(s in 1:length(unique(combo$Site))){
+  dd <- combo[combo$Site==unique(combo$Site)[s],]
+  dd$month <- as.numeric(format(dd$Date, "%m"))
+  
+  # smooth temp with 30 day window
+  dd$smoothSST <- ma(dd$temp_sst,n=30)
+  dd$smoothbot <- ma(dd$temp_bottom,n=30)
+  
+  # shift smooth SST 30 days ahead
+  dd$smoothlagSST <- shift(dd$smoothSST,30)
+  
+  # difference between smooth bottom & lagged smSST
+  dd$diff_in_smoothed <- dd$smoothlagSST - dd$smoothbot
+  
+  # average offset between smoothed SST and bottom
+  offsetavg[s] <- mean(dd$diff_in_smoothed,na.rm=TRUE)
+  dd$monthF <- factor(dd$month)
+  dd$diff_in_smoothed <- as.numeric(dd$diff_in_smoothed)
+  
+  offsetplots[[s]] <- 
+    ggplot(data=dd,aes(x=monthF,y=diff_in_smoothed)) + 
+    geom_boxplot() +
+    ggtitle(paste(unique(combo$Site)[s])) +
+    ylab("Daily differences (deg C)") +
+    xlab("Month") +
+    theme_classic()
+    
+    # histogram of daily differences
+    # ggplot(data=dd,aes(x=diff_in_smoothed)) +
+    # geom_histogram() + xlab("deg C\n (daily difference in SST & bottom)") + 
+    # ggtitle(paste(unique(combo$Site)[s]))
+    # geom_vline(xintercept = offsetavg[s],linetype="dashed") +
+    # theme_classic()
+  
+  # subtract 2.5 deg C from smoothed-lagged SST (found this by looking at offsetavg)
+  dd$smoothlagoffSST <- dd$smoothlagSST - 2.5
+  
+  # calc deviations in bottom T. add these into smoothlagoffSST
+  dd$bottom_dev <- as.numeric(dd$temp_bottom - dd$smoothbot)
+  
+  # add bottom deviations to smoothed-lagged SST
+  dd$mSST <- as.numeric(dd$smoothlagoffSST + dd$bottom_dev)
+  
+  # plot mSST & bottom temp time series
+  mtsplots[[s]] <-
+  ggplot(data=dd) +
+    geom_line(aes(x=Date,y=temp_bottom, color="Bottom")) + 
+    geom_line(aes(x=Date,y=smoothbot,color="Bottom smoothed")) +
+    geom_line(aes(x=Date,y=mSST,color="mSST")) +
+    geom_line(aes(x=Date,y=smoothlagoffSST,color="mSST smoothed")) +
+    ggtitle(paste(unique(combo$Site)[s])) + 
+    geom_line(aes(x=Date,y=temp_sst,color="SST")) +
+    labs(y = "Temperature", x="Date", color="") + 
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+    scale_color_manual(values = colors)
+  
+  # calc spectra for mSST
+  spmSST <- spec.pgram(na.omit(dd$mSST),spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  spdf <- as.data.frame(cbind((spmSST$freq/sampleinterval),(spmSST$spec*(spmSST$freq/sampleinterval))))
+  colnames(spdf) <- c("spx","spy")
+ 
+  # plot spectra for mSST
+  mSSTspecplots[[s]] <-
+    ggplot(data=spdf,aes(x=spx,y=spy,color="mSST")) + 
+    geom_line() + ggtitle(paste(dd$Site[1],"- mSST spectrum")) +
+    xlab("freq (1/days)") + ylab("spec*freq") +
+    theme_classic() + theme(legend.position="none") +
+    scale_color_manual(values = colors)
+  
+  
+}
+rm(s,spmSST,spdf,dd)
+offsetavgdf <- as.data.frame(cbind(offsetavg,unique(combo$Site)))
+colnames(offsetavgdf) <- c("diff","Site")
+offsetavgdf$diff <- as.numeric(as.character(offsetavgdf$diff))
+offsetavgdf$Site <- factor(offsetavgdf$Site, levels=offsetavgdf[order(offsetavgdf$diff),]$Site, ordered=TRUE)
+```
+
+## Fig 2. Modified SST
+
+SST has a 30 day lag, adjusted by 2.5 deg C, and the deviations from bottom temperature time series.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=30, fig.width=11}
+do.call(grid.arrange,c(mtsplots,ncol=2))
+```
+
+
+# Fig 3. Temp difference between SST and bottom at each site
+
+At most sites, the difference between SST and bottom is 2.5 deg C. 
+
+Difference in SST and bottom = (SST, t+30) - (bottom temperature, t)
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+ggplot(data=offsetavgdf,aes(x=Site,y=diff)) + 
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  ylab("Deg C (SST-bottom)")
+
+```
+
+
+# Fig 4. Magnitude of difference varies throughout the year
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=20, fig.width=9}
+do.call(grid.arrange,c(offsetplots,ncol=3))
+```
+
+
+# Fig 5. Comparing spectra of modified SST time series
+
+Does the spectra of modified SST time series look like the spectra of bottom temperature? -- > YES
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=40, fig.width=15}
+plot_grid(mSSTspecplots[[1]],pBR[[1]],pSR[[1]],mtsplots[[1]],
+          mSSTspecplots[[2]],pBR[[2]],pSR[[2]],mtsplots[[2]],
+          mSSTspecplots[[3]],pBR[[3]],pSR[[3]],mtsplots[[3]],
+          mSSTspecplots[[4]],pBR[[4]],pSR[[4]],mtsplots[[4]],
+          mSSTspecplots[[5]],pBR[[5]],pSR[[5]],mtsplots[[5]],
+          mSSTspecplots[[6]],pBR[[6]],pSR[[6]],mtsplots[[6]],
+          mSSTspecplots[[7]],pBR[[7]],pSR[[7]],mtsplots[[7]],
+          mSSTspecplots[[8]],pBR[[8]],pSR[[8]],mtsplots[[8]],
+          mSSTspecplots[[9]],pBR[[9]],pSR[[9]],mtsplots[[9]],
+          mSSTspecplots[[10]],pBR[[10]],pSR[[10]],mtsplots[[10]],
+          mSSTspecplots[[11]],pBR[[11]],pSR[[11]],mtsplots[[11]],
+          mSSTspecplots[[12]],pBR[[12]],pSR[[12]],mtsplots[[12]],
+          mSSTspecplots[[13]],pBR[[13]],pSR[[13]],mtsplots[[13]],
+          mSSTspecplots[[14]],pBR[[14]],pSR[[14]],mtsplots[[14]],
+          mSSTspecplots[[15]],pBR[[15]],pSR[[15]],mtsplots[[15]],
+          mSSTspecplots[[16]],pBR[[16]],pSR[[16]],mtsplots[[16]],ncol=4)
+
+```
+
+
+
+
+
+```{r include=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=30, fig.width=9}
+# Spectra of bottom and SST temperature (smoothed and raw)
+plot_grid(pBR[[1]],pSR[[1]],
+          pBR[[2]],pSR[[2]],
+          pBR[[3]],pSR[[3]],
+          pBR[[4]],pSR[[4]],
+          pBR[[5]],pSR[[5]],
+          pBR[[6]],pSR[[6]],
+          pBR[[7]],pSR[[7]],
+          pBR[[8]],pSR[[8]],
+          pBR[[9]],pSR[[9]],
+          pBR[[10]],pSR[[10]],
+          pBR[[11]],pSR[[11]],
+          pBR[[12]],pSR[[12]],
+          pBR[[13]],pSR[[13]],
+          pBR[[14]],pSR[[14]],
+          pBR[[15]],pSR[[15]],
+          pBR[[16]],pSR[[16]],
+          pBR[[17]],pSR[[17]],ncol=2)
+```
+
+
+
+
+```{r include=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=5, fig.width=6}
+# AutoRegressive Model
+ts <- combo[combo$Site == "Punta_Prieta",]$temp_bottom
+plot.ts(ts,main="PP",ylab="T")
+ts_ar <- arima(ts,order=c(1,0,0))
+residls <- residuals(ts_ar)
+ts_fitted <- ts - residls
+ts.plot(ts)
+points(ts_fitted,type="l",col=2,lty=2)
+
+
+# AR model is expressed like this:
+# 
+# X~t~ = Ar * X~t-1~ + error~t~
+# 
+# Where Ar is the estimate autoregressive part of the fitted model.
+# 
+# Rearranging the equation: error~t~ = X~t~ - Ar * X~t-1~
+# 
+# If we have `r length(ts)` days in temperature time series (using Punta Prieta as an example), we can use the AR model estimated from the bottom temperature on the SST.
+
+```
+
+

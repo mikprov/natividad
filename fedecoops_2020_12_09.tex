@@ -1,0 +1,243 @@
+\documentclass[]{article}
+\usepackage{lmodern}
+\usepackage{amssymb,amsmath}
+\usepackage{ifxetex,ifluatex}
+\usepackage{fixltx2e} % provides \textsubscript
+\ifnum 0\ifxetex 1\fi\ifluatex 1\fi=0 % if pdftex
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+\else % if luatex or xelatex
+  \ifxetex
+    \usepackage{mathspec}
+  \else
+    \usepackage{fontspec}
+  \fi
+  \defaultfontfeatures{Ligatures=TeX,Scale=MatchLowercase}
+\fi
+% use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+% use microtype if available
+\IfFileExists{microtype.sty}{%
+\usepackage{microtype}
+\UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\hypersetup{unicode=true,
+            pdftitle={Abalone stress calculations},
+            pdfauthor={Mikaela Provost},
+            pdfborder={0 0 0},
+            breaklinks=true}
+\urlstyle{same}  % don't use monospace font for urls
+\usepackage{graphicx,grffile}
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\makeatother
+% Scale images if necessary, so that they will not overflow the page
+% margins by default, and it is still possible to overwrite the defaults
+% using explicit options in \includegraphics[width, height, ...]{}
+\setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+\IfFileExists{parskip.sty}{%
+\usepackage{parskip}
+}{% else
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt plus 2pt minus 1pt}
+}
+\setlength{\emergencystretch}{3em}  % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{0}
+% Redefines (sub)paragraphs to behave more like sections
+\ifx\paragraph\undefined\else
+\let\oldparagraph\paragraph
+\renewcommand{\paragraph}[1]{\oldparagraph{#1}\mbox{}}
+\fi
+\ifx\subparagraph\undefined\else
+\let\oldsubparagraph\subparagraph
+\renewcommand{\subparagraph}[1]{\oldsubparagraph{#1}\mbox{}}
+\fi
+
+%%% Use protect on footnotes to avoid problems with footnotes in titles
+\let\rmarkdownfootnote\footnote%
+\def\footnote{\protect\rmarkdownfootnote}
+
+%%% Change title format to be more compact
+\usepackage{titling}
+
+% Create subtitle command for use in maketitle
+\providecommand{\subtitle}[1]{
+  \posttitle{
+    \begin{center}\large#1\end{center}
+    }
+}
+
+\setlength{\droptitle}{-2em}
+
+  \title{Abalone stress calculations}
+    \pretitle{\vspace{\droptitle}\centering\huge}
+  \posttitle{\par}
+    \author{Mikaela Provost}
+    \preauthor{\centering\large\emph}
+  \postauthor{\par}
+      \predate{\centering\large\emph}
+  \postdate{\par}
+    \date{12/09/2020}
+
+
+\begin{document}
+\maketitle
+
+\hypertarget{sites}{%
+\subsection{Sites}\label{sites}}
+
+We look at four methods of calculating stress at two sites: Morro Prieto
+and Punta Prieta. These sites are geographically close (\textless3 km
+apart), but have very different microclimates. Punta Prieta has a lot of
+temperature variability compared to Morro Prieto, but Morro Prieto is on
+average warmer.
+
+\hypertarget{method-1-short-term-variability}{%
+\subsection{Method 1: short-term
+variability}\label{method-1-short-term-variability}}
+
+This method assumes that organisms experience thermal stress when
+temperature they experience differs from the temperature they are
+acclimatized to. Daily thermal stress increases when the difference
+between experienced and expected temperature increases. Using a moving
+window of 4 days, we fit a weighted linear regression using daily
+temperature, and use this to estimate the `acclimatized' temperature for
+each day.
+
+In the time series plots below, color represents temperature abalone
+experienced above the site-specific thermal threshold (site-specific
+thermal limits are explained below). Units on the color bars is deg C.
+
+Total stress per site is the integral of the absolute values of daily
+stress (Fig 1b). We standardize each integral value by dividing it by
+the number of days at each site. The units of the standardized integral
+values are (deg C*day)/day --\textgreater{} deg C day.
+
+\hypertarget{fig-1a-daily-temperatures}{%
+\subsubsection{Fig 1a) Daily
+temperatures}\label{fig-1a-daily-temperatures}}
+
+\includegraphics{fedecoops_2020_12_09_files/figure-latex/unnamed-chunk-4-1.pdf}
+
+\hypertarget{fig-1b-daily-stress-values}{%
+\subsubsection{Fig 1b) Daily stress
+values}\label{fig-1b-daily-stress-values}}
+
+\includegraphics{fedecoops_2020_12_09_files/figure-latex/unnamed-chunk-5-1.pdf}
+
+\hypertarget{method-2-degree-heating-days}{%
+\subsection{Method 2: degree-heating
+days}\label{method-2-degree-heating-days}}
+
+Method 2 assumes that stress accumulates when abalone experience
+temperatures above an upper thermal limit. We assume there is some local
+adaptation among sites such that extreme temperatures experienced at one
+site may not be considered extreme, and therefore stressful, at another
+site. We define site-specific upper thermal limits as one standard
+deviation above the long-term mean of temperatures observed at that
+site.
+
+Instead of using daily temperature, we use each site's climatology to
+examine stress experienced above the upper thermal limit. Climatology is
+calculated using the loess function in R with a 90 day smoothing window.
+In the time series plots below, daily temperture (grey line),
+climatology (red line), and upper thermal limit (orange dashed line) are
+plotted for each site.
+
+Total stress at each site is the integral of temperatures greater than
+the site-specific thermal limit (deg C day). Just as in method 1, we
+then standaridze the integrals by the number of days in time series per
+site. Units of standardized integral values are deg C day.
+
+\hypertarget{fig-2a-climatology-temperature-threshold}{%
+\subsubsection{Fig 2a) Climatology \& temperature
+threshold}\label{fig-2a-climatology-temperature-threshold}}
+
+\includegraphics{fedecoops_2020_12_09_files/figure-latex/unnamed-chunk-6-1.pdf}
+
+\hypertarget{fig-2b-daily-stress-values}{%
+\subsubsection{Fig 2b) Daily stress
+values}\label{fig-2b-daily-stress-values}}
+
+\includegraphics{fedecoops_2020_12_09_files/figure-latex/unnamed-chunk-7-1.pdf}
+
+\hypertarget{method-3-climatology-of-potential-max-temp---short-term-variability}{%
+\subsection{Method 3: (climatology of potential max temp) - (short-term
+variability)}\label{method-3-climatology-of-potential-max-temp---short-term-variability}}
+
+The goal of this method is to combine stress of thermal limits and
+stress associated with short-term variation in temperature. Short-term
+variability can be considered `good' if temperatures are high because
+the variation in temperature has a cooling off effect. But there is
+still some stress associated with rapidly changing temps.
+
+\begin{itemize}
+\item
+  In this menthod we calculate the potential maximum climatology.
+  Climatology of the maximum values over a moving window.
+\item
+  Then, we integrate the maximum climatology values above the
+  site-specific thermal threshold. And standardize this integral by the
+  number of days in temperature time series.
+\item
+  Short-term variability is considered `good' in this case and therefore
+  reducing stress, so we subtract the amount of short-term variability
+  stress as calculated in method 1 from the standardized integrals.
+\end{itemize}
+
+\hypertarget{fig-3a-max-climatology---short-term-variability-stress}{%
+\subsubsection{Fig 3a) (max climatology) - (short-term variability
+stress)}\label{fig-3a-max-climatology---short-term-variability-stress}}
+
+Variability is a good thing when temperature is high. Abalone are
+`cooled off'.
+
+\includegraphics{fedecoops_2020_12_09_files/figure-latex/unnamed-chunk-8-1.pdf}
+
+\hypertarget{fig-3b-daily-stress-values}{%
+\subsubsection{Fig 3b) Daily stress
+values}\label{fig-3b-daily-stress-values}}
+
+Stress = (deg C of max climatology above threshold) - (stress due to
+short-term variability)
+
+\includegraphics{fedecoops_2020_12_09_files/figure-latex/unnamed-chunk-9-1.pdf}
+
+\hypertarget{comparing-3-stress-values}{%
+\subsubsection{Comparing 3 stress
+values}\label{comparing-3-stress-values}}
+
+\begin{itemize}
+\item
+  Method 1: Short-term variability
+\item
+  Method 2: Cumulative temp of mean climatology above thermal threshold
+\item
+  Method 3: (max climatology) - (short-term variability)
+\end{itemize}
+
+\includegraphics{fedecoops_2020_12_09_files/figure-latex/unnamed-chunk-10-1.pdf}
+
+\hypertarget{method-4-thermal-performance-curve}{%
+\subsection{Method 4: Thermal performance
+curve}\label{method-4-thermal-performance-curve}}
+
+We assume abalone operate under a specific thermal performance curve
+with a thermal limit (Tmax). The thermal response curve is adapted from
+{[}Barneche et al 2014{]}
+(\url{https://onlinelibrary-wiley-com.stanford.idm.oclc.org/doi/full/10.1111/ele.12309?casa_token=eU9n50Xo5QwAAAAA\%3APi-WSH_dZ1AtzhuWL0GzM-VUmTep3yQrmLtkVX6hknA4AWliVIK0HtL29MACgNFMkJtdCmH5K9_L0gj_}).
+The optimal temperature is set to the mean of the data from a site. We
+then normalize and invert the thermal performance curve so that the
+stress factor is zero at the optimal temperature and one above Tmax.
+Then to calculate stress, the difference between the optimal temperature
+and the temperature at each time is multiplied by the stress factor. We
+then take the absolute value and integrate to get an overall stress in
+deg C days.
+
+
+\end{document}

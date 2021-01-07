@@ -1,0 +1,700 @@
+---
+title: "Testing offsets & variance correlation"
+author: "Mikaela M. Provost"
+date: "9/4/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+
+# load functions --> ***** CHECK for MG or MP *****
+source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+
+# # Plan
+# 1. For each site, check if site-specific temperature offset and 2.5 deg C offset has different impacts on stress time series.
+# 2. See if depth correlates with site-specific average offset.
+# 3. Check to see if variance in bottom temperature correlates with variance in SST. Does variance correlate for each month? We might expect SST and bottom temperature to be less correlated during upwelling.
+# 4. Quantify amount of variance at high frequencies in bottom temperature. Add this variance to smoothed SST time series.
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in data -- #
+
+# read in data - bottom
+d <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomfede <- d %>% group_by(Site,Date) %>% sample_n(1) %>% select(Site,Temperature,Date)# randomly select temp per day
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% 
+  select(Site,Temperature,Date)
+bottomall <- rbind(bottomfede,bottommppp)
+names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# read in data - SST
+m <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/morroprieto_temp.csv",stringsAsFactors = FALSE)
+p <- read.csv(file= "C:/Users/Mikaela/Documents/GitHub/natividad/data/puntaprieta_temp.csv",stringsAsFactors = FALSE)
+m$Site <- rep("Morro_Prieto")
+p$Site <- rep("Punta_Prieta")
+p$datetime <- as.Date(p$datetime,format="%m/%d/%Y") #more fun with dates
+m$datetime <- as.Date(m$datetime,format="%m/%d/%Y") #I hate dates
+file_names <- list.files(path = "C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Documents/GitHub/natividad/data/sstfedecoop/",
+                file_names[f],"_temp.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$datetime <- as.Date(SSTfede$datetime,format="%d-%b-%Y") #date problems
+SSTall <- bind_rows(p,m,SSTfede)
+SSTall <- SSTall %>% select(datetime,temp,Site,flag)
+names(SSTall)[names(SSTall)=="datetime"] <- "Date"
+names(SSTall)[names(SSTall)=="temp"] <- "temp_sst"
+rm(f,m,p,SSTfede,filesL,file_names)
+
+# standardize site location names
+sitekey <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+sitekey <- sitekey[complete.cases(sitekey),]
+SSTall$bsite <- sitekey[match(SSTall$Site,sitekey$Ssites),"bsites"]
+bottomall$Ssite <- sitekey[match(bottomall$Site,sitekey$bsites),"Ssites"] 
+
+# keep same dates
+combo <- left_join(SSTall,bottomall,by=c("Date"="Date","Site"="Ssite"))
+combo <- combo[complete.cases(combo),]
+combo <- combo %>% select(Date,temp_sst,Site,temp_bottom)
+combo$Depth <- sitekey[match(combo$Site,sitekey$Ssites),"depth"]
+rm(bottomall,SSTall)
+```
+
+
+
+
+```{r include=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------------------------
+# Look at spectrums of 10 min and daily temp at MP &  PP 
+# ---------------------------------------------------------------
+
+# read in 10 min interval data
+d1 <- read.csv(file="C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$UTC_Date_Time,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  select(Site,Temperature,Date,UTC_Date_Time,Year)
+bottom10 <- bottommppp
+rm(d1,bottommppp)
+
+# ----------
+# -- Morro Prieto prep to plot spectrum -- #
+# ----------
+# m = the square root of the time series length, if it is even number make odd
+tmp <- ceiling(sqrt(length(1:length(bottom10[bottom10$Site=="MorroPrieto",]$Temperature)))) 
+if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+span.multiplier = 1
+m = m * span.multiplier
+sampleinterval <- 10/1440 # 10 min/total min in day = obs. interval in terms of days
+
+# -- calc spectrum -- #
+spR <- spec.pgram(bottom10[bottom10$Site=="MorroPrieto",]$Temperature,
+                  spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+spS <- spec.pgram(bottom10[bottom10$Site=="MorroPrieto",]$Temperature,
+                  spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+
+#raw spec and freq
+spRdf <- as.data.frame(cbind((spR$freq/sampleinterval), (spR$spec*(spR$freq/sampleinterval)) ))
+colnames(spRdf) <- c("spx","spy")
+#convert freq axis to cycles per unit time (days), multiply power by freq 
+spSdf <- as.data.frame(cbind(spS$freq/sampleinterval, spS$spec*(spS$freq/sampleinterval) ))
+colnames(spSdf) <- c("spx","spy")
+
+# -- plot spectrum -- #
+pMP10specraw <- ggplot(data=spRdf[1:5000,]) + geom_line(aes(x=(spx),y=log10(spy))) +
+  ggtitle("Morro Prieto ") + 
+  xlab("freq (units = cycles per day)") +
+  ylab("log10(spec)*freq")
+  
+pMP10specsmooth <- ggplot(data=spSdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Morro Prieto - smoothed ") + 
+  xlab("freq (units = cycles per day)") +
+  ylab("log10(spec)*freq")
+rm(spR,spS,spRdf,spSdf,tmp,m)
+
+# ----------
+# -- Punta Prieta prep to plot spectrum -- #
+# ----------
+# m = the square root of the time series length, if it is even number make odd
+tmp <- ceiling(sqrt(length(1:length(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature)))) 
+if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+span.multiplier = 1
+m = m * span.multiplier
+sampleinterval <- 10/1440 # 10 min/total min in day = obs. interval in terms of days
+
+# -- calc spectrum -- #
+spR <- spec.pgram(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature,
+                  spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+spS <- spec.pgram(bottom10[bottom10$Site=="PuntaPrieta",]$Temperature,
+                  spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+
+#raw spec and freq
+spRdf <- as.data.frame(cbind((spR$freq/sampleinterval), (spR$spec*(spR$freq/sampleinterval)) ))
+colnames(spRdf) <- c("spx","spy")
+#convert freq axis to cycles per unit time (days), multiply power by freq 
+spSdf <- as.data.frame(cbind(spS$freq/sampleinterval, spS$spec*(spS$freq/sampleinterval) ))
+colnames(spSdf) <- c("spx","spy")
+
+# -- plot spectrum -- #
+
+pPP10specraw <- ggplot(data=spRdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Punta Prieta ") + 
+  xlab("freq (units = cycles per day)")
+  
+pPP10specsmooth <- ggplot(data=spSdf[1:5000,]) + geom_line(aes(x=spx,y=log10(spy))) +
+  ggtitle("Punta Prieta - smoothed ") + 
+  xlab("freq (units = cycles per day)") +
+  ylab("log10(spec)*freq")
+rm(spR,spS,spRdf,spSdf,tmp,m,sampleinterval)
+
+
+# ---------------------------------------------------------------
+# Look at spectrum of daily temp at MP &  PP 
+# ---------------------------------------------------------------
+
+sampleinterval = 1
+spPP <- spec.pgram(combo[combo$Site == "Punta_Prieta",]$temp_bottom,
+                  spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+spPPdf <- as.data.frame(cbind((spPP$freq/sampleinterval), (spPP$spec*(spPP$freq/sampleinterval)) ))
+colnames(spPPdf) <- c("spx","spy")
+spPPdf <- spPPdf[1:100,]
+
+pPPbottomspecplot <-
+   ggplot(data=spPPdf) + geom_line(aes(x=(spx),y=log10(spy))) +
+   ggtitle("Punta Prieta (daily) ") + 
+   xlab("") +
+   ylab("spec*freq")
+
+```
+
+```{r include, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------------------------
+# Spectrums of SST & bottom temp at each site
+# ---------------------------------------------------------------
+
+# Spectra of daily bottom temp and SST
+colors <- c("Bottom" = "firebrick1", "Bottom smoothed" = "firebrick4", 
+              "mSST" = "deepskyblue1", "mSST smoothed" = "deepskyblue4",
+              "SST" = "dimgray")
+sampleinterval = 1
+span.multiplier = 1
+pBR <- as.list(rep(NA,length=length(unique(combo$Site))))
+pBS <- as.list(rep(NA,length=length(unique(combo$Site))))
+pSR <- as.list(rep(NA,length=length(unique(combo$Site))))
+pSS <- as.list(rep(NA,length=length(unique(combo$Site))))
+
+for(s in 1:length(unique(combo$Site))){ #for each site
+  # subset to site
+  d <- combo[combo$Site == unique(combo$Site)[s],]
+  
+  # find the span 
+  tmp <- ceiling(sqrt(length(1:length(d$Site)))) 
+  if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+  m = m * span.multiplier
+  
+  # bottom spectrum - raw, smoothed
+  spBR <- spec.pgram(d$temp_bottom,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  spBS <- spec.pgram(d$temp_bottom,spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+  spBRdf <- as.data.frame(cbind((spBR$freq/sampleinterval),
+                                (spBR$spec*(spBR$freq/sampleinterval))))
+  spBSdf <- as.data.frame(cbind((spBS$freq/sampleinterval),
+                                (spBS$spec*(spBS$freq/sampleinterval))))
+  colnames(spBRdf) <- c("spx","spy")
+  colnames(spBSdf) <- c("spx","spy")
+
+  
+  # SST spectrum - raw, smoothed
+  spSR <- spec.pgram(d$temp_sst,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  spSS <- spec.pgram(d$temp_sst,spans=m,taper=0.1,plot = FALSE,demean = TRUE)
+  spSRdf <- as.data.frame(cbind((spSR$freq/sampleinterval),
+                                (spSR$spec*(spSR$freq/sampleinterval))))
+  spSSdf <- as.data.frame(cbind((spSS$freq/sampleinterval),
+                                (spSS$spec*(spSS$freq/sampleinterval))))
+  colnames(spSRdf) <- c("spx","spy")
+  colnames(spSSdf ) <- c("spx","spy")
+  
+  # store plots
+  pBR[[s]] <- ggplot(data=spBRdf,aes(x=(spx),y=spy,color="Bottom")) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - bottom T",sep="")) +
+    xlab("freq (1/days)") + ylab("spec*freq") +
+    scale_color_manual(values = colors) + theme(legend.position="none") 
+  
+  pBS[[s]] <- ggplot(data=spBSdf,aes(x=(spx),y=spy)) + 
+    geom_line() + ggtitle(paste(d$Site[1],"- bottom T (smoothed)")) +
+    xlab("freq (1/days)") + ylab("spec*freq") 
+  
+  pSR[[s]] <- ggplot(data=spSRdf,aes(x=(spx),y=spy,color="SST")) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - SST",sep="")) +
+    xlab("freq (1/days)") + ylab("spec*freq") +
+    scale_color_manual(values=colors) + theme(legend.position="none") 
+  
+  pSS[[s]] <- ggplot(data=spSSdf,aes(x=(spx),y=spy)) + 
+    geom_line() + ggtitle(paste(d$Site[1],"- SST (smoothed)")) +
+    xlab("freq (1/days)") + ylab("spec*freq")
+}
+rm(spBR,spBS,spSR,spSS,m,d,s,tmp,spBRdf,spBSdf,spSRdf,spSSdf,spPPdf,spPP)
+
+```
+
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------------------------
+# Create mSST (add columns to combo df)
+# ---------------------------------------------------------------
+lagtime = 30
+smoothingwindow=30
+site_offsets <- calc_offset(lagtime=lagtime,combo=combo,smoothingwindow=smoothingwindow)
+  
+  
+#combosave <- combo
+#combo <- combosave
+combo$smoothSST <- rep(NA,length=length(combo[,1]))
+combo$smoothbot <- rep(NA,length=length(combo[,1]))
+combo$mSST_sitespecificoffset <- rep(NA,length=length(combo[,1]))
+combo$mSST_2.5offset <- rep(NA,length=length(combo[,1]))
+combo$sitespecificoffset <- rep(NA,length=length(combo[,1]))
+combo$offset2.5  <- rep(2.5,length=length(combo[,1]))
+
+
+mtsplots <- as.list(rep(NA,length=length(unique(combo$Site))))
+
+for(s in 1:length(unique(combo$Site))){
+  
+  dd <- combo[combo$Site==unique(combo$Site)[s],]
+ 
+  # smooth temp with 30 day window
+  dd$smoothSST <- ma(dd$temp_sst,n=smoothingwindow)
+  dd$smoothbot <- ma(dd$temp_bottom,n=smoothingwindow)
+  
+  # shift smooth SST 30 days ahead
+  dd$smoothlagSST <- shift(dd$smoothSST,lagtime)
+  
+  # difference between smooth bottom & lagged smSST
+  dd$diff_in_smoothed <- as.numeric(dd$smoothlagSST - dd$smoothbot)
+  
+  # (offset 1) smoothed SST w/30 day lag and w/temperature offset
+  dd$sitespecificoffset <- rep(site_offsets[site_offsets$Site==unique(combo$Site)[s],]$mean_diff,length=length(dd[,1]))
+  dd$smoothlagoffSST <- dd$smoothlagSST - dd$sitespecificoffset
+  
+  # (offset 2) smooth SST w/30 day lag & w/standard temp offset (offset=2.5)
+  dd$smoothlagoffSST2.5 <- dd$smoothlagSST - dd$offset2.5  
+  
+  # calc deviations in bottom T (difference between raw bottom and smoothed)
+  dd$bottom_dev <- as.numeric(dd$temp_bottom - dd$smoothbot)
+  
+  # add bottom deviations to smoothed-lagged SST
+  dd$mSST_sitespecificoffset <- as.numeric(dd$smoothlagoffSST + dd$bottom_dev)
+  dd$mSST_2.5offset <- as.numeric(dd$smoothlagoffSST2.5 + dd$bottom_dev)
+  
+  # merge new cols from dd into combo df
+  combo[combo$Site==unique(combo$Site)[s],]$smoothSST <- dd[match(combo[combo$Site==unique(combo$Site)[s],]$Date,dd$Date),"smoothSST"]
+  combo[combo$Site==unique(combo$Site)[s],]$smoothbot <- dd[match(combo[combo$Site==unique(combo$Site)[s],]$Date,dd$Date),"smoothbot"]
+  combo[combo$Site==unique(combo$Site)[s],]$mSST_sitespecificoffset <- dd[match(combo[combo$Site==unique(combo$Site)[s],]$Date,dd$Date),"mSST_sitespecificoffset"]
+  combo[combo$Site==unique(combo$Site)[s],]$mSST_2.5offset <- dd[match(combo[combo$Site==unique(combo$Site)[s],]$Date,dd$Date),"mSST_2.5offset"]
+  combo[combo$Site==unique(combo$Site)[s],]$sitespecificoffset <- rep(dd$sitespecificoffset[1],length=length(combo[combo$Site==unique(combo$Site)[s],1]))
+  
+  
+  # plot mSST & bottom temp time series
+  mtsplots[[s]] <-
+  ggplot(data=dd) +
+    geom_line(aes(x=Date,y=temp_bottom, color="Bottom")) + 
+    geom_line(aes(x=Date,y=smoothbot,color="Bottom smoothed")) +
+    geom_line(aes(x=Date,y=mSST_sitespecificoffset,color="mSST_sitespecificoffset")) +
+    geom_line(aes(x=Date,y=smoothlagoffSST,color="mSST smoothed")) + 
+    ggtitle(paste(unique(combo$Site)[s])) + 
+    geom_line(aes(x=Date,y=temp_sst,color="SST")) +
+    labs(y = "Temperature", x="Date", color="") + 
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+    scale_color_manual(values = colors)
+  
+}  
+rm(s,dd,lagtime,smoothingwindow)
+
+
+```
+
+# Fig 1. Does temperature offset correlate with site depth?
+
+Answer: sort of. Deeper sites have a greater offset, but sites hang around 2-2.5 deg C.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
+site_offsets$Depth <- sitekey[match(site_offsets$Site,sitekey$Ssites),"depth"]
+
+ggplot(data=site_offsets,aes(x=Depth,y=mean_diff)) + 
+  geom_point() +
+  ylab("Offset in deg C") +
+  xlab("Site Depth (m)") +
+  ggtitle("") + 
+  geom_hline(yintercept = 2.5,lty="dashed",color="grey") +
+  geom_text_repel(data=site_offsets,
+                  aes(label = Site),
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  theme_classic() 
+  
+
+```
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------------------------
+# Run stress model on mSST_sitespecific & mSST_2.5offset
+# ---------------------------------------------------------------
+
+#combosave2 <- combo
+#combo <- combosave2
+
+combo$expectedT_sitespecific <- rep(NA,length=length(combo[,1]))
+combo$Dstress_sitespecific <- rep(NA,length=length(combo[,1]))
+
+combo$expectedT_2.5 <- rep(NA,length=length(combo[,1]))
+combo$Dstress_2.5 <- rep(NA,length=length(combo[,1]))
+  
+wts <- c(0.1,0.2,0.4,0.8)
+wts <- wts/sum(wts)
+wtsp <- round(wts*100,digits=0)
+
+for(s in 1:length(unique(combo$Site))){
+  
+  # mSST w/site specific offset
+  d1 <- combo %>% filter(Site==unique(combo$Site)[s]) %>% select(Date,mSST_sitespecificoffset) 
+  colnames(d1) <- c("Date","dailyT")
+  # run stress function w/site specific offset
+  stress1 <- calc_stress(d=d1,wtsp=wtsp) 
+  
+  #merge stress info back into combo
+  combo[combo$Site==unique(combo$Site)[s],]$expectedT_sitespecific <- stress1[match(combo[combo$Site==unique(combo$Site)[s],]$Date,stress1$Date),"expectedT"]
+  combo[combo$Site==unique(combo$Site)[s],]$Dstress_sitespecific <- stress1[match(combo[combo$Site==unique(combo$Site)[s],]$Date,stress1$Date),"Dstress"]
+  
+  # mSST w/2.5 offset
+  d2 <- combo %>% filter(Site==unique(combo$Site)[s]) %>% select(Date,mSST_2.5offset) 
+  colnames(d2) <- c("Date","dailyT")
+  # run stress function w/site specific offset
+  stress2 <- calc_stress(d=d2,wtsp=wtsp) 
+  
+  #merge stress info back into combo
+  combo[combo$Site==unique(combo$Site)[s],]$expectedT_2.5 <- stress2[match(combo[combo$Site==unique(combo$Site)[s],]$Date,stress2$Date),"expectedT"]
+  combo[combo$Site==unique(combo$Site)[s],]$Dstress_2.5 <- stress2[match(combo[combo$Site==unique(combo$Site)[s],]$Date,stress2$Date),"Dstress"]
+  
+  rm(d1,d2,stress1,stress2)
+  
+}
+rm(s)
+
+```
+
+## Fig 2. Does site-specific temperature offset matter in stress time series? --> No
+
+For the way we created mSST so far, using 2.5 or site-specific offset doesn't matter. I think this is because in either case, high frequency variance is the same - it comes from deviations in bottom temp.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=35}
+stress_plots <- as.list(rep(NA,length=length(unique(combo$Site))))
+for(s in 1:length(unique(combo$Site))){
+  stress_plots[[s]] <-
+  ggplot(data=combo[combo$Site == unique(combo$Site)[s],]) +
+  geom_line(aes(x=Date,y=Dstress_2.5)) +
+  ylim(-1.4,1.4) +
+  ylab("Stress (experience-expected T)") +
+  xlab("Date") +
+  ggtitle(paste(unique(combo$Site)[s])) +
+  theme_classic()
+  
+}
+
+do.call(grid.arrange,c(stress_plots,ncol=2))
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# ---------------------------------------------------------------
+# Calc variance in SST & bottom temperature
+# ---------------------------------------------------------------
+combo1 <- combo[complete.cases(combo),]
+combo1$month <- as.numeric(format(combo1$Date,"%m"))
+
+var_df <- data.frame(
+  Site = rep(unique(combo1$Site),times=12),
+  month= c(rep(1,18),rep(2,18),rep(3,18),rep(4,18),rep(5,18),rep(6,18),
+           rep(7,18),rep(8,18),rep(9,18),rep(10,18),rep(11,18),rep(12,18)),
+  var_sst_yearly = rep(NA,length=length(unique(combo1$Site))*12),
+  var_sst_monthly = rep(NA,length=length(unique(combo1$Site))*12),
+  var_bot_yearly = rep(NA,length=length(unique(combo1$Site))*12),
+  var_bot_monthly = rep(NA,length=length(unique(combo1$Site))*12)
+  )
+
+
+for(s in 1:length(unique(combo1$Site))){
+  
+  dd <- combo1[combo1$Site==unique(combo1$Site)[s],]
+  
+  # yearly variance - SST
+  var_df[var_df$Site == unique(combo1$Site)[s],]$var_sst_yearly <- var(dd$temp_sst,na.rm = TRUE)
+  
+  # monthly variance - SST
+  for(m in 1:12){
+   var_df[var_df$Site == unique(combo1$Site)[s] &
+          var_df$month == m,]$var_sst_monthly <- var(dd[dd$month==m,]$temp_sst,na.rm = TRUE)
+   }
+  
+  # yearly variance - bottom
+  var_df[var_df$Site == unique(combo1$Site)[s],]$var_bot_yearly <- var(dd$temp_bottom,na.rm = TRUE)
+  
+  # monthly variance - SST
+  for(m in 1:12){
+   var_df[var_df$Site == unique(combo1$Site)[s] &
+          var_df$month == m,]$var_bot_monthly <- var(dd[dd$month==m,]$temp_bottom,na.rm = TRUE)}
+  
+}
+
+var_df_long <- var_df %>% gather(key="vartype",value="variance",3:6)
+var_df_long$monthF <- factor(var_df_long$month)
+
+
+```
+
+# Fig 3. SST variance correlates with bottom variance
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
+varlm <- lm(var_df[var_df$month==1,]$var_bot_yearly ~ var_df[var_df$month==1,]$var_sst_yearly)
+
+withoutSD <- var_df[var_df$month==1,] 
+withoutSD <- withoutSD[!withoutSD$Site=="San_Diego",]
+  
+varlmSD <- lm(withoutSD$var_bot_yearly ~ withoutSD$var_sst_yearly)
+
+ggplot(data=var_df[var_df$month==1,],aes(x=var_sst_yearly,y=var_bot_yearly)) +
+  geom_point() +
+  
+  geom_abline(aes(intercept = varlm$coefficients[1], slope=varlm$coefficients[2],color=paste(round(varlm$coefficients[2],digits=2)))) +
+  
+  geom_abline(aes(intercept = varlmSD$coefficients[1], slope=varlmSD$coefficients[2], color=paste(round(varlmSD$coefficients[2],digits=2)))) +
+  xlab('SST variance (yearly)') + ylab('Bottom variance (yearly)') +
+  
+  geom_text_repel(data=var_df[var_df$month==1,],
+                  aes(label = Site),
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) + theme_classic() +
+  theme(legend.title=element_blank())
+```
+
+# Fig 4. Monthly variance
+
+Looking month-to-month, the correlation between SST and bottom can break down.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=35}
+monthly_var_plots <- as.list(rep(NA,length=length(unique(var_df_long$Site))))
+
+for(s in 1:length(unique(var_df_long$Site))){
+  monthly_var_plots[[s]] <- 
+  
+    ggplot(data=var_df_long) + 
+    geom_point(data=var_df_long[var_df_long$vartype %in% c('var_sst_monthly','var_bot_monthly') &
+                        var_df_long$Site==unique(combo1$Site)[s],],
+               aes(x=monthF,y=variance,color=vartype),size=3) +
+    geom_line(data=var_df_long[var_df_long$vartype %in% c('var_sst_monthly','var_bot_monthly') &
+                        var_df_long$Site==unique(combo1$Site)[s],],
+               aes(x=month,y=variance,color=vartype)) +
+    ggtitle(paste(unique(combo1$Site)[s])) +
+    ylim(0,4.5) +
+    ylab("Monthly variance") +
+    xlab("Month") +
+    theme_bw()
+  
+}
+do.call(grid.arrange,c(monthly_var_plots,ncol=2))
+
+```
+
+# Fig 5. Monthly variance at all sites
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
+
+ggplot(data=var_df_long) + 
+  geom_point(data=var_df_long[var_df_long$vartype %in% c('var_sst_monthly','var_bot_monthly'),],
+               aes(x=monthF,y=variance,color=vartype),size=2) +
+  # geom_line(data=var_df_long[var_df_long$vartype %in% c('var_sst_monthly','var_bot_monthly'),],
+  #              aes(x=month,y=variance,color=vartype)) +
+  ggtitle("") +
+  ylab("Monthly variance") +
+  xlab("Month") +
+  theme_bw()
+
+
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------------------------
+# Does high frequency variance correlate? 
+# ---------------------------------------------------------------
+
+# Spectra of daily bottom temp and SST
+# colors <- c("Bottom" = "firebrick1", "Bottom smoothed" = "firebrick4", 
+#               "mSST" = "deepskyblue1", "mSST smoothed" = "deepskyblue4",
+#               "SST" = "dimgray")
+sampleinterval = 1
+span.multiplier = 1
+
+spdfL <- as.list(rep(NA,length=length(unique(combo$Site))))
+
+
+for(s in 1:length(unique(combo$Site))){ #for each site
+  
+  # subset to site
+  d <- combo[combo$Site == unique(combo$Site)[s],]
+  
+  # # find the span 
+  # tmp <- ceiling(sqrt(length(1:length(d$Site)))) 
+  # if (tmp %% 2 == 0) {m <- tmp+1} else {m <- tmp} 
+  # m = m * span.multiplier
+  
+  # spectrum
+  sp_bot <- spec.pgram(d$temp_bottom,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  sp_sst <- spec.pgram(d$temp_sst,spans=NULL,taper=0.1,plot = FALSE,demean = TRUE)
+  
+  sp_bot_df <- data.frame(
+    Site = rep(d$Site[1]),
+    temptype = rep("bottom"),
+    freq = sp_bot$freq/sampleinterval,
+    spy = sp_bot$spec*(sp_bot$freq/sampleinterval))
+  
+  sp_sst_df <- data.frame(
+    Site = rep(d$Site[1]),
+    temptype = rep("sst"),
+    freq = sp_sst$freq/sampleinterval,
+    spy = sp_sst$spec*(sp_sst$freq/sampleinterval) )
+  
+  spdf <- as.data.frame(rbind(sp_bot_df,sp_sst_df))
+  
+  spdfL[[s]] <- spdf
+  
+}
+specdf <- do.call("rbind",spdfL)
+rm(spdfL,spdf,sp_sst_df,sp_bot_df,sp_bot,sp_sst,s)
+
+
+# calc AUC for high and low
+
+cutoff <- 0.2
+
+# AUC bottom
+
+AUC_bottom <- data.frame(
+  Site=unique(specdf$Site),
+  AUC=rep(NA,length=length(unique(specdf$Site))),
+  AUC_highamt=rep(NA,length=length(unique(specdf$Site))),
+  AUC_lowamt=rep(NA,length=length(unique(specdf$Site))),
+  AUC_highfra=rep(NA,length=length(unique(specdf$Site))),
+  AUC_lowfra=rep(NA,length=length(unique(specdf$Site)))   )
+  
+for(s in 1:length(unique(specdf$Site))){
+  
+  AUC_bottom[AUC_bottom$Site==unique(AUC_bottom$Site)[s],]$AUC <- sum(specdf[specdf$Site==unique(specdf$Site)[s] &
+                                                                             specdf$temptype=="bottom",]$spy)
+   
+  AUC_bottom[AUC_bottom$Site==unique(AUC_bottom$Site)[s],]$AUC_highamt <- sum(specdf[specdf$Site==unique(specdf$Site)[s] &
+                                                                              specdf$temptype=="bottom" &
+                                                                              specdf$freq < cutoff ,]$spy)
+  
+  AUC_bottom[AUC_bottom$Site==unique(AUC_bottom$Site)[s],]$AUC_lowamt <- sum(specdf[specdf$Site==unique(specdf$Site)[s] &
+                                                                              specdf$temptype=="bottom" &
+                                                                              specdf$freq >= cutoff ,]$spy)
+}
+AUC_bottom$AUC_highfra <- round(AUC_bottom$AUC_highamt / AUC_bottom$AUC,digits=3)
+AUC_bottom$AUC_lowfra <- round(AUC_bottom$AUC_lowamt / AUC_bottom$AUC,digits=3)
+AUC_bottom$temptype <- rep("bottom")
+
+# AUC sst
+AUC_sst <- data.frame(
+  Site=unique(specdf$Site),
+  AUC=rep(NA,length=length(unique(specdf$Site))),
+  AUC_highamt=rep(NA,length=length(unique(specdf$Site))),
+  AUC_lowamt=rep(NA,length=length(unique(specdf$Site))),
+  AUC_highfra=rep(NA,length=length(unique(specdf$Site))),
+  AUC_lowfra=rep(NA,length=length(unique(specdf$Site)))   )
+  
+for(s in 1:length(unique(specdf$Site))){
+  
+  AUC_sst[AUC_sst$Site==unique(AUC_sst$Site)[s],]$AUC <- sum(specdf[specdf$Site==unique(specdf$Site)[s] &
+                                                                             specdf$temptype=="sst",]$spy)
+   
+  AUC_sst[AUC_sst$Site==unique(AUC_sst$Site)[s],]$AUC_highamt <- sum(specdf[specdf$Site==unique(specdf$Site)[s] &
+                                                                              specdf$temptype=="sst" &
+                                                                              specdf$freq < cutoff ,]$spy)
+  
+  AUC_sst[AUC_sst$Site==unique(AUC_sst$Site)[s],]$AUC_lowamt <- sum(specdf[specdf$Site==unique(specdf$Site)[s] &
+                                                                              specdf$temptype=="sst" &
+                                                                              specdf$freq >= cutoff ,]$spy)
+}
+AUC_sst$AUC_highfra <- round(AUC_sst$AUC_highamt / AUC_sst$AUC,digits=3)
+AUC_sst$AUC_lowfra <- round(AUC_sst$AUC_lowamt / AUC_sst$AUC,digits=3)
+AUC_sst$temptype <- rep("sst")
+
+AUC <- rbind(AUC_sst,AUC_bottom)
+
+
+```
+
+# Fig 6. Does high frequency variance correlate?
+
+High frequency variance calculation: get spectrum (no smoothers), spectrum output is multiplied by frequency. Frequency-specific variance values for frequencies >0.2 are summed to get the area under the curve. 
+
+Area under curve units seem off. Ask Brock.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
+
+
+d1 <- data.frame(
+  Site = AUC_bottom$Site,
+  AUC_highamt_bot = AUC_bottom$AUC_highamt,
+  AUC_highamt_sst = AUC_sst$AUC_highamt  )
+ggplot(data=d1,aes(x=AUC_highamt_sst,y=AUC_highamt_bot)) + 
+  geom_point() +
+  ggtitle(paste("Amount of high freq variance (>",cutoff,")",sep="")) +
+  ylab("high freq variance in bottom temp") +
+  xlab("high freq variance in SST") +
+  geom_text_repel(data=d1,
+                  aes(label = Site),
+                  color="grey",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  theme_classic()
+
+    
+
+```

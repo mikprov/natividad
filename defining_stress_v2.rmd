@@ -1,0 +1,969 @@
+---
+title: "Using temperature to describe stress"
+author: "Mikaela M. Provost"
+date: "7/30/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Goals
+
+Overal goal is to develop a method that defines stress through time based on a time series of temperature. Before running our stress model, I want to calibrate SST to match *in situ* temperature at depth. We have lots of *in situ* data, but we have so much more SST.
+
+What data do we have?
+
+* *In situ* daily temperature observations ( 9/12/2015 -- 8/17/2018) in two locations, Morro Prieto and Punta Prieta.
+
+* Daily SST for a longer period of time (2009-2019) in both locations.
+
+Update: randomly select one temperature per day from the 10 min data. Then run slope model on this time series of bottom temperature (instead of using mean daily T).
+
+
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(grid)
+```
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# --- Load data ---
+
+# Try different data time series
+
+# 1) April - Sept 2018 at Punta Prieta site
+# d <- read.csv('C:/Users/Mikaela/Documents/GitHub/natividad/data/2018_04_15_Mexico_IslaNatividad_PuntaPrietaBuckets_1MAB_MiniDOT_SN095037.csv',header = TRUE, stringsAsFactors = FALSE)
+# # create separate 'day' index column
+# d$datetimeNew <- as.POSIXct(d$Date_Time_UTC,format="%m/%d/%Y %H:%M")
+# d <- d %>% separate(Date_Time_UTC,into=c('dateUTC','timeUTC'),sep=' ') 
+# d$dateUTC <- as.Date.factor(d[order(as.Date(d$dateUTC,format="%m/%d/%Y")),]$dateUTC,format="%m/%d/%Y")
+# d$day <- as.numeric(as.factor(d$dateUTC))
+# d <- d %>% select(dateUTC,Temperature_C,day)
+# colnames(d) <- c("dateUTC","temp","dayindex")
+# d$datatype <- rep("summer2018PP10min_insitu",length=length(d[,1]))
+# head(d)
+# 
+# # reduce 10 min T data to mean daily T 
+# davg <- d %>% group_by(dateUTC) %>% summarise(daymean=mean(temp))
+# davg$dayindex <- seq(from=1,to=length(dayTmean$dateUTC),by=1)
+# davg$datatype <- rep("summer2018PPdailyavg_insitu",length=length(davg[,1]))
+# colnames(davg) <- c("dateUTC","temp","datatype")
+# head(davg)
+```
+
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+
+# Date data frame: all possible days from 1/1/2003 - 12/27/2019
+# use this to know if there are missing days, need it for averaging 
+# observations on the same julian day at one site
+datedf <- data.frame(date=seq(as.Date("2003-01-01"),as.Date("2019-12-27"),by="days"))
+datedf$year <- format(as.Date(datedf$date, format="%d/%m/%Y"),"%Y")
+datedf$dayindex <- rep(NA,length=length(datedf[,1]))
+for(y in 1:length(unique(datedf$year))){ #for each yr
+  yr = unique(datedf$year)[y] #add julian day in dayindex
+  yrlgth = length(datedf[datedf$year==yr,]$year)
+  datedf[datedf$year == yr,]$dayindex <- seq(from=1,to=yrlgth,by=1)}
+head(datedf)
+rm(yr,yrlgth,y)
+
+
+# 2) 2009 - 2019 (Punta Prieta SST) 
+# Brock filled in satelite SST derived data, missing bc cloud cover
+d <- read.csv('C:/Users/Mikaela/Documents/GitHub/natividad/data/puntaprieta_temp.csv',header = TRUE, stringsAsFactors = FALSE)
+d$datetime <- as.Date(d$datetime, "%m/%d/%Y")
+names(d)[names(d)=="datetime"] <- "date"
+d <- merge(d,datedf,by.x='date',by.y='date',all.x=T,all.y=T)
+d$datatype <- rep("PP_SST",length=length(d[,1]))
+d$flag <- as.factor(d$flag)
+PP_SST <- d
+
+# 3) 2003 - 2019 (Morro Prieto SST)
+# Brock filled in satelite SST derived data, missing bc cloud cover
+d <- read.csv('C:/Users/Mikaela/Documents/GitHub/natividad/data/morroprieto_temp.csv',header = TRUE, stringsAsFactors = FALSE)
+d$datetime <- as.Date(d$datetime, "%m/%d/%Y")
+names(d)[names(d)=="datetime"] <- "date"
+d <- merge(d,datedf,by.x='date',by.y='date',all.x=T,all.y=T)
+d$datatype <- rep("MP_SST",length=length(d[,1]))
+d$flag <- as.factor(d$flag)
+SST <- rbind(PP_SST,d)
+rm(PP_SST,d)
+
+# 4) 2015 - 2018 MP and PP in situ data 
+d <- read.csv("C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",header=TRUE,stringsAsFactors = FALSE)
+d$Date <- as.Date(d$Date,format="%m/%d/%Y")
+names(d)[names(d)=="Date"] <- "date"
+d <- d %>% filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT')
+d <- left_join(d,datedf,by="date")
+in_situ <- d
+rm(d)
+
+# export some data for Will on my question:
+# d <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+# #d$datatype <- rep("bottomT",length=length(d[,1]))
+# names(d)[names(d)=="dailyT"] <- "bottomT"
+# s <- SST %>% filter(datatype=="MP_SST") %>% select(date,temp)
+# names(s)[names(s)=="temp"] <- "SST"
+# head(s)
+# ds <- left_join(d,s,by="date")
+# ggplot(data=ds,aes(x=date,y=bottomT)) +
+#          geom_line(color="blue") +
+#   geom_line(aes(x=date,y=SST),color="black") +
+#   ggtitle("SST (black) and bottom temp (blue)") +
+#   ylab("T deg C")
+# lines(ds$date,ds$SST)
+# write.csv(ds,file="C:/Users/Mikaela/Documents/GitHub/natividad/data/forWill.csv")
+
+```
+
+#### Skip
+
+ Calculate the average difference between SST and *in situ* temp
+
+1. Find the average temperature per Julian day (at each site, for *in situ* and for SST). 
+
+2. Calculate a smoothed monthly moving average. 
+
+3. For each Julian day, calculate the difference between the moving average of SST and *in situ*. 
+
+4. Use this daily-offset to adjust daily SST temperatures. 
+
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# generate time series of moving average 
+window <- 30 #must be even number
+
+# Morro Prieto in situ
+# this line averages 10 min within each day
+d <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(dayindex) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d$mm <- rep(NA,length(d$dayindex))
+ts <- length(d$mm) - ((window/2)-1) - ((window/2)-1) -1 #start and end moving avg not at ends of time series
+for(t in 1:ts){ #step through days
+  d[((window/2)+t),]$mm <- mean(d$dailyT[t:(t+window-1)])} #average T over window}
+d <- d[!is.na(d$mm),]
+d <- d %>% gather("datatype","temp",2:3)
+d$site <- rep("MP",length=length(d$temp))
+MPmm <- d
+rm(ts,t,d)
+# Punta Prieta in situ
+d <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(dayindex) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d$mm <- rep(NA,length(d$dayindex))
+ts <- length(d$mm) - ((window/2)-1) - ((window/2)-1) -1 #start and end moving avg not at ends of time series
+for(t in 1:ts){ #step through days
+  d[((window/2)+t),]$mm <- mean(d$dailyT[t:(t+window-1)])} #average T over window}
+d <- d[!is.na(d$mm),]
+d <- d %>% gather("datatype","temp",2:3)
+d$site <- rep("PP",length=length(d$temp))
+# format julian day averages for in situ data
+mmsit <- rbind(MPmm, d)
+mmsit$datasource <- rep("insitu",length=length(mmsit$dayindex))
+rm(ts,t,d,MPmm)
+# plot site - julian day averages (can i add raw data??)
+# ggplot(data=mmsit,aes(x=dayindex,y=temp,color=site))+
+#   geom_point() + ggtitle("in situ: PP & MP monthly avg")
+
+# Morro Prieto SST
+d <- SST[SST$datatype == "MP_SST",] %>% group_by(dayindex) %>% summarize(dailyT = mean(temp,na.rm=TRUE))
+d$mm <- rep(NA,length(d$dayindex))
+ts <- length(d$mm) - ((window/2)-1) - ((window/2)-1) -1 #start and end moving avg not at ends of time series
+for(t in 1:ts){ #step through days
+  d[((window/2)+t),]$mm <- mean(d$dailyT[t:(t+window-1)])} #average T over window}
+d <- d[!is.na(d$mm),]
+d <- d %>% gather("datatype","temp",2:3)
+d$site <- rep("MP",length=length(d$temp))
+MPmm <- d
+
+# Punta Prieta SST
+d <- SST[SST$datatype == "PP_SST",] %>% group_by(dayindex) %>% summarize(dailyT = mean(temp,na.rm=TRUE))
+d$mm <- rep(NA,length(d$dayindex))
+ts <- length(d$mm) - ((window/2)-1) - ((window/2)-1) -1 #start and end moving avg not at ends of time series
+for(t in 1:ts){ #step through days
+  d[((window/2)+t),]$mm <- mean(d$dailyT[t:(t+window-1)])} #average T over window
+d <- d[!is.na(d$mm),]
+d <- d %>% gather("datatype","temp",2:3)
+d$site <- rep("PP",length=length(d$temp))
+PPmm <- d
+
+# format julian day averages for SST data at both sites
+mmsst <- bind_rows(MPmm,PPmm)
+mmsst$datasource <- rep("SST",length=length(mmsst$temp))
+rm(d,t,PPmm,MPmm,ts)
+
+# julian day averages at both sites for SST & in situ 
+mmjul <- bind_rows(mmsit,mmsst)
+mmjul$sitesr <- paste(mmjul$site,mmjul$datasource,sep="_")
+rm(mmsit,mmsst)
+
+```
+
+
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# SST offset to match in situ bottom temperature
+
+#Using the moving averages calculated above, find the difference between SST and in situ on each julian day.
+
+# calculate: the average between the moving means of each data type 
+# (in situ, SST) within each site (MP, PP)
+# 1st: in situ data
+d1 <- mmjul %>% filter(datatype=='mm' & datasource=='insitu' & site=='MP')
+d2 <- mmjul %>% filter(datatype=='mm' & datasource=='insitu' & site=='PP')
+instmean <- rowMeans(cbind(d1$temp, d2$temp), na.rm=TRUE)
+rm(d1,d2)
+
+# 2nd: SST data
+d1 <- mmjul %>% filter(datatype=='mm' & datasource=='SST' & site=='MP')
+d2 <- mmjul %>% filter(datatype=='mm' & datasource=='SST' & site=='PP')
+SSTmean <- rowMeans(cbind(d1$temp, d2$temp), na.rm=TRUE)
+rm(d1)
+
+# 3rd: make offset table: SST & in situ difference by julian day
+offset <- SSTmean - instmean
+offsetm <- data.frame(cbind(offset,d2$dayindex))
+colnames(offsetm) <- c("offset","dayindex")
+str(offsetm)
+rm(offset,d2)
+d <- data.frame(cbind(SSTmean,instmean))
+d$dayindex <- seq(from=1,to=length(d[,1]))
+d <- d %>% gather("datatype","value",1:2)
+head(d)
+ggplot() +
+  geom_line(data=d, aes(x=dayindex,y=value,color=datatype))
+
+# 4th: adjust the raw SST by the offset, offset is per julian day
+SSTo <- left_join(SST,offsetm,by="dayindex") 
+SSTo <- SSTo[!is.na(SSTo$offset),]
+SSTo$SSTaj <- SSTo$temp - SSTo$offset
+
+```
+
+
+
+
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE }
+## Rolling 4 day window of stress accumulation 
+
+#This model calculates the linear regression coefficients on 4 days of temp data. And then estimates the 'expected' temperature on the 4th day. This 'expected' temperature is one data point in the smoothed function. The difference between the 'expected' temperature and 'experienced' is a measure of stress. 
+
+calc.stress <- function(d,wtsp){
+  
+  # d = data frame with at least these columns: dailyT,date
+    # wtsp = vector of weights that say which days should count more in regression
+  # the length(wtsp) is the window length
+
+  # note:
+  # add input parm that specifies the type of data (sst or insitu)
+  # so i can add column to output df
+  window <- length(wtsp)
+ 
+  # -- Calculate Expected T in rolling window -- #
+  
+  expectedT <- rep(NA,length=length(d$date)-window)
+  date <- rep(NA,length=length(expectedT))
+  expT <- data.frame(cbind(expectedT,date))
+  rm(expectedT,date)
+  
+  for(i in 1:(length(d$date)-4)){ #step through dates
+    
+    # subset temp data to window
+    tsub <- d[i:(i+window-1),]
+    tsub$dayseq <- c(1:window)
+    tsub$wtsp <- wtsp
+    
+    # test by plotting (for troubleshooting)
+    #plot(x=tsub$dayseq,y=tsub$dailyT,main="4 data points, 100 in blue")
+    #abline(lm(dailyT~dayseq,data=tsub) )
+    #abline(lm(dailyT~dayseq,data=texp),col="blue" )
+    
+    # add more temp observations in proportion to their weight
+    texp <- tsub[rep(row.names(tsub),tsub$wtsp),1:ncol(tsub)-1]
+    
+    # calc regression, predict 'expected T' on last day in window
+    expT$expectedT[i] <- predict(lm(data=texp,dailyT~dayseq),
+                                 list(dayseq=tsub$dayseq[window]))
+    expT$date[i] <- as.character(tsub$date[window])
+  }
+  expT$date <- as.Date(expT$date,format="%Y-%m-%d")
+  d2 <- left_join(d,expT,by="date")
+  d2$Dstress <- d2$dailyT - d2$expectedT
+  rm(i,tsub,texp)
+  return(d2)
+  
+}
+
+```
+
+
+
+#### 1) Plot the raw temperature at each location.
+
+*In situ* daily temperature is randomly chosen from 10 minute temperature recordings.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=6}
+
+# plot 1: raw data at each site
+# these two lines calculate the mean daily T
+#d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+#d2 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+# these two lines randomly selects one temperature recording from each day
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% sample_n(1)
+d2 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% sample_n(1)
+names(d1)[names(d1) == "Temperature"] <- "dailyT"
+names(d2)[names(d2) == "Temperature"] <- "dailyT"  
+ 
+# both sites together
+p1 <- ggplot() +
+  geom_line(data=d1, aes(x=date,y=dailyT,color="MP_insitu")) +
+  geom_smooth(data=d1, aes(x=date,y=dailyT,color="MP_insitu"),se=FALSE) +
+  
+  geom_line(data=d2,aes(x=date,y=dailyT,color="PP_insitu")) +
+  geom_smooth(data=d2,aes(x=date,y=dailyT,color="PP_insitu"),se=FALSE) +
+  
+  geom_line(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst")) + 
+  geom_smooth(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst"),se=FALSE) + 
+  
+  geom_line(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst")) +
+  geom_smooth(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst"),se=FALSE) +
+  
+  ggtitle("Raw in situ and SST data at Morro Prieto & Punta Prieta") +
+  ylab("daily T (randomly selected observation per day)")
+
+# Morro Prieto
+p2 <- ggplot() +
+  geom_line(data=d1, aes(x=date,y=dailyT,color="MP_insitu")) +
+  geom_smooth(data=d1, aes(x=date,y=dailyT,color="MP_insitu"),se=FALSE) +
+  
+  geom_line(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst")) +
+  geom_smooth(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst"),se=FALSE) +
+  ylim(c(11,27)) + ggtitle("a) Morro Prieto ") +
+  ylab("daily T\n(random observation per day)")
+
+# Punta Prieta
+p3 <- ggplot() +
+ 
+  geom_line(data=d2,aes(x=date,y=dailyT,color="PP_insitu")) +
+  geom_smooth(data=d2,aes(x=date,y=dailyT,color="PP_insitu"),se=FALSE) +
+  
+  geom_line(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst")) + 
+  geom_smooth(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst"),se=FALSE) + 
+  ylim(c(11,27)) + ggtitle("b) Punta Prieta") +
+  ylab("daily T\n(random observation per day)")
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(p2), ggplotGrob(p3), size = "last"))
+rm(p1,p2,p3,d1,d2)
+
+```
+
+*In situ* daily temperature is average of 10 minute temperature recordings.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=6}
+
+# plot 1: raw data at each site
+# these two lines calculate the mean daily T
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d2 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+
+# both sites together
+p1 <- ggplot() +
+  geom_line(data=d1, aes(x=date,y=dailyT,color="MP_insitu")) +
+  geom_smooth(data=d1, aes(x=date,y=dailyT,color="MP_insitu"),se=FALSE) +
+  
+  geom_line(data=d2,aes(x=date,y=dailyT,color="PP_insitu")) +
+  geom_smooth(data=d2,aes(x=date,y=dailyT,color="PP_insitu"),se=FALSE) +
+  
+  geom_line(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst")) + 
+  geom_smooth(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst"),se=FALSE) + 
+  
+  geom_line(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst")) +
+  geom_smooth(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst"),se=FALSE) +
+  
+  ggtitle("Raw in situ and SST data at Morro Prieto & Punta Prieta") +
+  ylab("daily T (randomly selected observation per day)")
+
+# Morro Prieto
+p2 <- ggplot() +
+  geom_line(data=d1, aes(x=date,y=dailyT,color="MP_insitu")) +
+  geom_smooth(data=d1, aes(x=date,y=dailyT,color="MP_insitu"),se=FALSE) +
+  
+  geom_line(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst")) +
+  geom_smooth(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst"),se=FALSE) +
+  ylim(c(11,27)) + ggtitle("a) Morro Prieto ") +
+  ylab("daily T\n(mean temperature)")
+
+# Punta Prieta
+p3 <- ggplot() +
+ 
+  geom_line(data=d2,aes(x=date,y=dailyT,color="PP_insitu")) +
+  geom_smooth(data=d2,aes(x=date,y=dailyT,color="PP_insitu"),se=FALSE) +
+  
+  geom_line(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst")) + 
+  geom_smooth(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst"),se=FALSE) + 
+  ylim(c(11,27)) + ggtitle("b) Punta Prieta") +
+  ylab("daily T\n(mean temperature)")
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(p2), ggplotGrob(p3), size = "last"))
+rm(p1,p2,p3,d1,d2)
+
+```
+
+
+#### 2) Skip 
+
+Old stuff: Plot the average temperature per Julian day. The daily offset is calculated from this plot: SSTmean - instmean (for each julian day). The daily offset is substracted from raw daily SST (see fig 3)
+
+```{r eval=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+
+p1 <- ggplot()+
+  #geom_line(data=in_situ,aes(x=dayindex,y=Temperature,color=Site)) +
+  geom_point(data=mmjul[mmjul$datatype=="dailyT",],
+            aes(x=dayindex,y=temp,color=sitesr)) + 
+  geom_line(data=mmjul[mmjul$datatype=="mm",],
+            aes(x=dayindex,y=temp,color=sitesr)) + 
+  ggtitle("Julian day averages\nUse this plot to calculate daily offset on SST\nOffset = (moving mean SST per julian day) - (moving mean insitu per julian day)") 
+
+# plot overall average of in situ and SST temp
+d <- data.frame(cbind(SSTmean,instmean))
+d$dayindex <- seq(from=1,to=length(d[,1]))
+d <- d %>% gather("datatype","value",1:2)
+p2 <- ggplot() +
+  geom_line(data=d, aes(x=dayindex,y=value,color=datatype)) +
+  xlab("Julian day") + ylab("Temp")
+
+p2
+rm(p1,p2,d)
+```
+
+#### 3) Skip
+
+Old stuff: Compare raw SST with the adjusted SST (SST-offset) 
+
+```{r eval=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+#plot only dates between 
+
+ggplot() +
+   # raw SST
+   geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17"),],
+              aes(x=date,y=temp),color="grey") +
+  # ajusted SST
+  geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17"),],
+             aes(x=date,y=SSTaj,color=datatype)) +
+  
+  ggtitle("Raw SST (grey) & adjusted SST")
+```
+
+#### 4) Skip
+
+Overlay the adjusted SST with *in situ* time series -- do they match?
+
+The goal is to have the adjusted SST time series (here, the blue and green lines) overlap the *in situ* time series as much as possible (the red and purple lines). 
+
+Does the daily SST offset work?
+
+* Sort of. The peaks and troughs appear to line up more closely than the raw SST data
+
+* Mean temperature per day in the adjusted SST time series doesn't overlap the mean *in situ* throughout the year (this is bad)
+
+* In some years there is better overlap compared to other years. 
+
+
+##### 4 (a,b) Skip
+
+Overlap between adjusted SST and in situ lines is close
+
+Offset in SST is based on an average of in situ data at both Morro Prieto and Punta Prieta. 
+
+```{r eval=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=6}
+
+# both sites
+p1 <- ggplot() +
+  
+  # raw SST
+  # geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17"),],
+  #            aes(x=date,y=temp),color="grey") +
+  # 
+  #raw in situ
+  geom_point(data=in_situ,
+              aes(x=date,y=Temperature,color=Site)) +
+  # ajusted SST
+  geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17"),],
+             aes(x=date,y=SSTaj,color=datatype)) +
+  # raw in situ
+  geom_smooth(data=in_situ,
+              aes(x=date,y=Temperature,color=Site)) +
+  ggtitle("SST is adjusted with offset\n Adjusted SST and in situ lines overlap, but not that great")
+
+# Morro Prieto 
+
+p2 <- ggplot() +
+  
+  #raw in situ
+  geom_line(data=in_situ[in_situ$Site=="MorroPrieto",],
+              aes(x=date,y=Temperature,color=Site)) +
+  #ajusted SST
+  geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & 
+                        SSTo$date < as.Date("2018-08-17") & 
+                        SSTo$datatype=="MP_SST",],
+             aes(x=date,y=SSTaj,color=datatype)) +
+  ylim(c(12,26)) + ggtitle("a) Morro Prieto")
+
+p3 <- ggplot() +
+  
+  #raw in situ
+  geom_line(data=in_situ[in_situ$Site=="PuntaPrieta",],
+              aes(x=date,y=Temperature,color=Site)) +
+  #ajusted SST
+  geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & 
+                        SSTo$date < as.Date("2018-08-17") & 
+                        SSTo$datatype=="PP_SST",],
+             aes(x=date,y=SSTaj,color=datatype)) + 
+  ylim(c(12,26)) + ggtitle("b) Punta Prieta")
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(p2), ggplotGrob(p3), size = "last"))
+rm(p1,p2,p3)
+
+```
+
+
+#### 5) Skip
+
+Old stuff: Apply stress model to adjusted SST & *in situ* time series
+
+Daily stress in 2016 using *in situ* time series and adjusted SST time series 
+
+```{r eval=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# assign weights: abalone acclimiatize to the temperature today most, and 
+# the temperature on the earliest days least
+#wts <- c(0.1,0.2,0.4,0.8)
+wts <- c(0.1,0.4,0.8)
+wts <- wts/sum(wts)
+wtsp <- round(wts*100,digits=0)
+
+# Calculate daily stress for:
+
+# MP in situ 
+# -- these two lines finds the average daily T -- #
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+# -- these two lines randomly selects one temperature recording from each day -- #
+dd1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% sample_n(1)
+names(dd1)[names(dd1) == "Temperature"] <- "dailyT"
+dd1 <- dd1 %>% select(names(d1))
+d1 <- dd1
+MP_inst_stress <- calc.stress(d=d1,wtsp=wtsp)
+MP_inst_stress$datatypesr <- rep("MP_insitu",length=length(MP_inst_stress[,1]))
+MP_inst_stress <- MP_inst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1,dd1)
+
+# -- SKIP -- MP SST adjusted
+d1 <- SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17") & SSTo$datatype=="MP_SST",]
+names(d1)[names(d1)=="SSTaj"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+MP_sst_stress <- calc.stress(d=d1,wtsp=wtsp)
+MP_sst_stress$datatypesr <- rep("MP_SST",length=length(MP_sst_stress[,1]))
+MP_sst_stress <- MP_sst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1)
+
+# PP in situ
+# -- these two lines finds the average daily T -- #
+d1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+# -- these two lines randomly selects one temperature recording from each day -- #
+dd1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% sample_n(1)
+names(dd1)[names(dd1) == "Temperature"] <- "dailyT"
+dd1 <- dd1 %>% select(names(d1))
+d1 <- dd1
+PP_inst_stress <- calc.stress(d=d1,wtsp=wtsp)
+PP_inst_stress$datatypesr <- rep("PP_insitu",length=length(PP_inst_stress[,1]))
+PP_inst_stress <- PP_inst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1,dd1)
+
+# -- SKIP -- PP SST adjusted
+d1 <- SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17") & SSTo$datatype=="PP_SST",]
+names(d1)[names(d1)=="SSTaj"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+PP_sst_stress <- calc.stress(d=d1,wtsp=wtsp)
+PP_sst_stress$datatypesr <- rep("PP_SST",length=length(PP_sst_stress[,1]))
+PP_sst_stress <- PP_sst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1)
+
+# subset SST to only dates overlapping with in situ
+d1 <- MP_sst_stress[MP_sst_stress$date %in% MP_inst_stress$date,]
+d1 <- bind_rows(d1,MP_inst_stress)
+
+d2 <- PP_sst_stress[PP_sst_stress$date %in% PP_inst_stress$date,]
+d2 <- bind_rows(d2,PP_inst_stress)
+```
+
+
+```{r eval=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=6}
+# plot stress for SST & in situ
+p1 <- ggplot(data=d1[d1$date > as.Date("2016-01-01") & d1$date < as.Date("2016-06-29"),]) +
+  geom_line(aes(x=date,y=Dstress,color=datatypesr)) +
+  xlab("date (2016 only)") + ggtitle("a) Morro Prieto")
+
+p2 <- ggplot(data=d2[d2$date > as.Date("2016-01-01") & d1$date < as.Date("2016-06-29"),]) +
+  geom_line(aes(x=date,y=Dstress,color=datatypesr)) +
+  xlab("date (2016 only)") + ggtitle("b) Punta Prieta")
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(p1), ggplotGrob(p2), size = "last"))
+rm(p1,p2,d1,d2)
+
+```
+
+
+
+## Apply the stress model on raw SST and *in situ* time series
+
+
+```{r eval=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+#### As before, here are the raw temperatures at each location
+# plot 1: raw data at each site
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d2 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+
+ggplot() +
+  geom_line(data=d1, aes(x=date,y=dailyT,color="MP_insitu")) +
+  geom_smooth(data=d1, aes(x=date,y=dailyT,color="MP_insitu"),se=FALSE) +
+  
+  geom_line(data=d2,aes(x=date,y=dailyT,color="PP_insitu")) +
+  geom_smooth(data=d2,aes(x=date,y=dailyT,color="PP_insitu"),se=FALSE) +
+  
+  geom_line(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst")) + 
+  geom_smooth(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst"),se=FALSE) + 
+  
+  geom_line(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst")) +
+  geom_smooth(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst"),se=FALSE) +
+  
+  ggtitle("Raw in situ and SST data at Morro Prieto & Punta Prieta")
+```
+
+We run the stress model on raw time series. *In situ* daily time series is not the average daily temperature, daily bottom temperature is randomly selected from the 10 minute data. We did this to have a more direct comparison with daily SST observations. 
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# assign weights: abalone acclimiatize to the temperature today most, and 
+# the temperature on the earliest days least
+#wts <- c(0.1,0.2,0.4,0.8)
+wts <- c(0.1,0.4,0.8)
+wts <- wts/sum(wts)
+wtsp <- round(wts*100,digits=0)
+
+# Calculate daily stress for:
+
+# MP in situ 
+# -- these two lines finds the average daily T -- #
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+# -- these two lines randomly selects one temperature recording from each day -- #
+dd1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% sample_n(1)
+names(dd1)[names(dd1) == "Temperature"] <- "dailyT"
+dd1 <- dd1 %>% select(names(d1))
+d1 <- dd1
+MP_inst_stress <- calc.stress(d=d1,wtsp=wtsp)
+MP_inst_stress$datatypesr <- rep("MP_insitu",length=length(MP_inst_stress[,1]))
+MP_inst_stress <- MP_inst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1,dd1)
+
+# MP SST
+d1 <- SST[SST$datatype == "MP_SST",]
+names(d1)[names(d1)=="temp"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+MP_sst_stress <- calc.stress(d=d1,wtsp=wtsp)
+MP_sst_stress$datatypesr <- rep("MP_SST",length=length(MP_sst_stress[,1]))
+MP_sst_stress <- MP_sst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1)
+
+# PP in situ
+# -- these two lines finds the average daily T -- #
+d1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+# -- these two lines randomly selects one temperature recording from each day -- #
+dd1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% sample_n(1)
+names(dd1)[names(dd1) == "Temperature"] <- "dailyT"
+dd1 <- dd1 %>% select(names(d1))
+d1 <- dd1
+PP_inst_stress <- calc.stress(d=d1,wtsp=wtsp)
+PP_inst_stress$datatypesr <- rep("PP_insitu",length=length(PP_inst_stress[,1]))
+PP_inst_stress <- PP_inst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1,dd1)
+
+
+# PP SST
+d1 <- SST[SST$datatype == "PP_SST",]
+names(d1)[names(d1)=="temp"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+PP_sst_stress <- calc.stress(d=d1,wtsp=wtsp)
+PP_sst_stress$datatypesr <- rep("PP_SST",length=length(PP_sst_stress[,1]))
+PP_sst_stress <- PP_sst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1)
+
+# subset SST to only dates overlapping with in situ
+d1 <- MP_sst_stress[MP_sst_stress$date %in% MP_inst_stress$date,]
+d1 <- bind_rows(d1,MP_inst_stress)
+
+d2 <- PP_sst_stress[PP_sst_stress$date %in% PP_inst_stress$date,]
+d2 <- bind_rows(d2,PP_inst_stress)
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=6}
+# plot stress for SST & in situ
+p1 <- ggplot(data=d1[d1$date > as.Date("2016-04-01") & d1$date < as.Date("2016-09-29"),]) +
+  geom_line(aes(x=date,y=Dstress,color=datatypesr)) +
+  xlab("date (2016 only)") + ggtitle("a) Morro Prieto")+
+  ylab("Dstress (expected T - experienced T)")
+
+p2 <- ggplot(data=d2[d2$date > as.Date("2016-04-01") & d2$date < as.Date("2016-09-29"),]) +
+  geom_line(aes(x=date,y=Dstress,color=datatypesr)) +
+  xlab("date (2016 only)") + ggtitle("b) Punta Prieta")+
+  ylab("Dstress (expected T - experienced T)")
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(p1), ggplotGrob(p2), size = "last"))
+rm(p1,p2)
+
+
+```
+
+#### Plot stress time series for entire year (2016)
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=8}
+# plot stress for SST & in situ
+p1 <- ggplot(data=d1[d1$date > as.Date("2016-01-01") & d1$date < as.Date("2016-12-29"),]) +
+  geom_line(aes(x=date,y=Dstress,color=datatypesr)) +
+  xlab("date (2016 only)") + ggtitle("a) Morro Prieto") +
+  ylab("Dstress (expected T - experienced T)")
+
+p2 <- ggplot(data=d2[d2$date > as.Date("2016-01-01") & d2$date < as.Date("2016-12-29"),]) +
+  geom_line(aes(x=date,y=Dstress,color=datatypesr)) +
+  xlab("date (2016 only)") + ggtitle("b) Punta Prieta")+
+  ylab("Dstress (expected T - experienced T)")
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(p1), ggplotGrob(p2), size = "last"))
+rm(p1,p2,d1,d2)
+
+
+```
+
+
+## Time lags between SST and in situ
+
+For one site, plot SST at time *t* on x-axis and in situ temperature at *t+n* day. Here *n* is a number of days into the future from day *t*. 
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# prep for making lag df: randomly select dailyT from in situ
+
+# MP in situ 
+# -- these two lines finds the average daily T -- #
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+mp_insitu <- d1
+# -- these two lines randomly selects one temperature recording from each day -- #
+dd1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% sample_n(1)
+names(dd1)[names(dd1) == "Temperature"] <- "dailyT"
+dd1 <- dd1 %>% select(names(d1))
+mp_insitu <- dd1
+rm(d1,dd1)
+# MP SST
+d1 <- SST[SST$datatype == "MP_SST",]
+names(d1)[names(d1)=="temp"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+mp_sst <- d1
+mp_sst <- mp_sst[mp_sst$date %in% mp_insitu$date,]
+rm(d1)
+
+# PP in situ 
+# -- these two lines finds the average daily T -- #
+d1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+mp_insitu <- d1
+# -- these two lines randomly selects one temperature recording from each day -- #
+dd1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% sample_n(1)
+names(dd1)[names(dd1) == "Temperature"] <- "dailyT"
+dd1 <- dd1 %>% select(names(d1))
+pp_insitu <- dd1
+rm(d1,dd1)
+# PP SST
+d1 <- SST[SST$datatype == "PP_SST",]
+names(d1)[names(d1)=="temp"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+pp_sst <- d1
+pp_sst <- pp_sst[pp_sst$date %in% pp_insitu$date,]
+rm(d1)
+
+
+# days into the future from day t
+n = 30
+
+# fill in this data frame -- MP
+columns <-  c("datet","datetn","Tt_sst","Ttn_insitu","site")
+d <- data.frame(matrix(NA,nrow=(length(unique(in_situ$date))-n),ncol=length(columns)))
+names(d) <- columns
+rm(columns)
+# fill in dates & T -- MP
+d$datet <- mp_insitu$date[1:(length(mp_insitu$date)-n)]
+d$datetn <- mp_insitu$date[(n+1):length(mp_insitu$date)]
+d$Tt_sst <- mp_sst$dailyT[1:(length(mp_sst$dailyT)-n)] #SST at t
+d$Ttn_insitu <- mp_insitu$dailyT[(n+1):length(mp_insitu$dailyT)] #bottom at t+n
+d$site <- rep("MP")
+mpd <- d
+rm(d)
+
+# fill in this data frame -- PP
+columns <-  c("datet","datetn","Tt_sst","Ttn_insitu","site")
+d <- data.frame(matrix(NA,nrow=(length(unique(in_situ$date))-n),ncol=length(columns)))
+names(d) <- columns
+
+rm(columns)
+# fill in dates & T -- PP
+d$datet <- pp_insitu$date[1:(length(pp_insitu$date)-n)]
+d$datetn <- pp_insitu$date[(n+1):length(pp_insitu$date)]
+d$Tt_sst <- pp_sst$dailyT[1:(length(pp_insitu$dailyT)-n)] #SST at t
+d$Ttn_insitu <- pp_insitu$dailyT[(n+1):length(pp_sst$dailyT)] #bottom at t+n
+d$site <- rep("PP")
+ppd <- d
+rm(d)
+
+```
+
+### 1) `r n` day time lag
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=6}
+# plot SST at t vs insitu at t+n
+p1 <- ggplot(data=mpd) +
+  geom_point(aes(x=Tt_sst,y=Ttn_insitu)) +
+  xlab("SST (t)") + 
+  ylab(paste("bottom temperature (t+",n,")",sep="")) +
+  ggtitle(paste("a) Morro Prieto"))
+
+p2 <- ggplot(data=ppd) + 
+  geom_point(aes(x=Tt_sst,y=Ttn_insitu)) +
+  xlab("SST (t)") + 
+  ylab(paste("bottom temperature (t+",n,")",sep="")) +
+  ggtitle("b) Punta Prieta")
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(p1), ggplotGrob(p2), size = "last"))
+rm(p1,p2,d,dd)
+
+```
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# prep for making lag df: randomly select dailyT from in situ
+
+# MP in situ 
+# -- these two lines finds the average daily T -- #
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+mp_insitu <- d1
+# -- these two lines randomly selects one temperature recording from each day -- #
+dd1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% sample_n(1)
+names(dd1)[names(dd1) == "Temperature"] <- "dailyT"
+dd1 <- dd1 %>% select(names(d1))
+mp_insitu <- dd1
+rm(d1,dd1)
+# MP SST
+d1 <- SST[SST$datatype == "MP_SST",]
+names(d1)[names(d1)=="temp"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+mp_sst <- d1
+mp_sst <- mp_sst[mp_sst$date %in% mp_insitu$date,]
+rm(d1)
+
+# PP in situ 
+# -- these two lines finds the average daily T -- #
+d1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+mp_insitu <- d1
+# -- these two lines randomly selects one temperature recording from each day -- #
+dd1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% sample_n(1)
+names(dd1)[names(dd1) == "Temperature"] <- "dailyT"
+dd1 <- dd1 %>% select(names(d1))
+pp_insitu <- dd1
+rm(d1,dd1)
+# PP SST
+d1 <- SST[SST$datatype == "PP_SST",]
+names(d1)[names(d1)=="temp"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+pp_sst <- d1
+pp_sst <- pp_sst[pp_sst$date %in% pp_insitu$date,]
+rm(d1)
+
+
+# days into the future from day t
+n = 45
+
+# fill in this data frame -- MP
+columns <-  c("datet","datetn","Tt_sst","Ttn_insitu","site")
+d <- data.frame(matrix(NA,nrow=(length(unique(in_situ$date))-n),ncol=length(columns)))
+names(d) <- columns
+rm(columns)
+# fill in dates & T -- MP
+d$datet <- mp_insitu$date[1:(length(mp_insitu$date)-n)]
+d$datetn <- mp_insitu$date[(n+1):length(mp_insitu$date)]
+d$Tt_sst <- mp_sst$dailyT[1:(length(mp_sst$dailyT)-n)] #SST at t
+d$Ttn_insitu <- mp_insitu$dailyT[(n+1):length(mp_insitu$dailyT)] #bottom at t+n
+d$site <- rep("MP")
+mpd <- d
+rm(d)
+
+# fill in this data frame -- PP
+columns <-  c("datet","datetn","Tt_sst","Ttn_insitu","site")
+d <- data.frame(matrix(NA,nrow=(length(unique(in_situ$date))-n),ncol=length(columns)))
+names(d) <- columns
+
+rm(columns)
+# fill in dates & T -- PP
+d$datet <- pp_insitu$date[1:(length(pp_insitu$date)-n)]
+d$datetn <- pp_insitu$date[(n+1):length(pp_insitu$date)]
+d$Tt_sst <- pp_sst$dailyT[1:(length(pp_insitu$dailyT)-n)] #SST at t
+d$Ttn_insitu <- pp_insitu$dailyT[(n+1):length(pp_sst$dailyT)] #bottom at t+n
+d$site <- rep("PP")
+ppd <- d
+rm(d)
+
+```
+
+### 2) `r n` day time lag
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=6}
+# plot SST at t vs insitu at t+n
+p1 <- ggplot(data=mpd) +
+  geom_point(aes(x=Tt_sst,y=Ttn_insitu)) +
+  xlab("SST (t)") + 
+  ylab(paste("bottom temperature (t+",n,")",sep="")) +
+  ggtitle(paste("a) Morro Prieto"))
+
+p2 <- ggplot(data=ppd) + 
+  geom_point(aes(x=Tt_sst,y=Ttn_insitu)) +
+  xlab("SST (t)") + 
+  ylab(paste("bottom temperature (t+",n,")",sep="")) +
+  ggtitle("b) Punta Prieta")
+
+grid.newpage()
+grid.draw(rbind(ggplotGrob(p1), ggplotGrob(p2), size = "last"))
+rm(p1,p2,d,dd)
+
+```

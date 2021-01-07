@@ -1,0 +1,745 @@
+---
+title: "Using temperature to describe stress"
+author: "Mikaela M. Provost"
+date: "7/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Goals
+
+Focus on one site around Natividad, Punta Prieta. Goal is to test different temperature-related methods of defining stress based on the literature. 
+
+Data:
+
+* In situ daily temperature observations (2015-9-12 - 2018-8-17) in two locations, Morro Prieto and Punta Prieta.
+
+* SST daily temp for a longer period of time (2009-2019).
+
+Typical estimates of stress count the number of days observed above X degree. This doesn't account for how fast temperatures change. I explore a couple methods that try to account for temperature variability because this is probably important in causing stress in abalone. 
+
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# --- Load data ---
+
+# Try different data time series
+
+# 1) April - Sept 2018 at Punta Prieta site
+# d <- read.csv('C:/Users/Mikaela/Documents/GitHub/natividad/data/2018_04_15_Mexico_IslaNatividad_PuntaPrietaBuckets_1MAB_MiniDOT_SN095037.csv',header = TRUE, stringsAsFactors = FALSE)
+# # create separate 'day' index column
+# d$datetimeNew <- as.POSIXct(d$Date_Time_UTC,format="%m/%d/%Y %H:%M")
+# d <- d %>% separate(Date_Time_UTC,into=c('dateUTC','timeUTC'),sep=' ') 
+# d$dateUTC <- as.Date.factor(d[order(as.Date(d$dateUTC,format="%m/%d/%Y")),]$dateUTC,format="%m/%d/%Y")
+# d$day <- as.numeric(as.factor(d$dateUTC))
+# d <- d %>% select(dateUTC,Temperature_C,day)
+# colnames(d) <- c("dateUTC","temp","dayindex")
+# d$datatype <- rep("summer2018PP10min_insitu",length=length(d[,1]))
+# head(d)
+# 
+# # reduce 10 min T data to mean daily T 
+# davg <- d %>% group_by(dateUTC) %>% summarise(daymean=mean(temp))
+# davg$dayindex <- seq(from=1,to=length(dayTmean$dateUTC),by=1)
+# davg$datatype <- rep("summer2018PPdailyavg_insitu",length=length(davg[,1]))
+# colnames(davg) <- c("dateUTC","temp","datatype")
+# head(davg)
+```
+
+## Read data into R
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+
+# Date data frame: all possible days from 1/1/2003 - 12/27/2019
+# use this to know if there are missing days, need it for averaging 
+# observations on the same julian day at one site
+datedf <- data.frame(date=seq(as.Date("2003-01-01"),as.Date("2019-12-27"),by="days"))
+datedf$year <- format(as.Date(datedf$date, format="%d/%m/%Y"),"%Y")
+datedf$dayindex <- rep(NA,length=length(datedf[,1]))
+for(y in 1:length(unique(datedf$year))){ #for each yr
+  yr = unique(datedf$year)[y] #add julian day in dayindex
+  yrlgth = length(datedf[datedf$year==yr,]$year)
+  datedf[datedf$year == yr,]$dayindex <- seq(from=1,to=yrlgth,by=1)}
+head(datedf)
+rm(yr,yrlgth,y)
+
+
+# 2) 2009 - 2019 (Punta Prieta SST) 
+# Brock filled in satelite SST derived data, missing bc cloud cover
+d <- read.csv('C:/Users/Mikaela/Documents/GitHub/natividad/data/puntaprieta_temp.csv',header = TRUE, stringsAsFactors = FALSE)
+d$datetime <- as.Date(d$datetime, "%m/%d/%Y")
+names(d)[names(d)=="datetime"] <- "date"
+d <- merge(d,datedf,by.x='date',by.y='date',all.x=T,all.y=T)
+d$datatype <- rep("PP_SST",length=length(d[,1]))
+d$flag <- as.factor(d$flag)
+PP_SST <- d
+
+# 3) 2003 - 2019 (Morro Prieto SST)
+# Brock filled in satelite SST derived data, missing bc cloud cover
+d <- read.csv('C:/Users/Mikaela/Documents/GitHub/natividad/data/morroprieto_temp.csv',header = TRUE, stringsAsFactors = FALSE)
+d$datetime <- as.Date(d$datetime, "%m/%d/%Y")
+names(d)[names(d)=="datetime"] <- "date"
+d <- merge(d,datedf,by.x='date',by.y='date',all.x=T,all.y=T)
+d$datatype <- rep("MP_SST",length=length(d[,1]))
+d$flag <- as.factor(d$flag)
+SST <- rbind(PP_SST,d)
+rm(PP_SST,d)
+
+# 4) 2015 - 2018 MP and PP in situ data 
+d <- read.csv("C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",header=TRUE,stringsAsFactors = FALSE)
+d$Date <- as.Date(d$Date,format="%m/%d/%Y")
+names(d)[names(d)=="Date"] <- "date"
+d <- d %>% filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT')
+d <- left_join(d,datedf,by="date")
+in_situ <- d
+rm(d)
+
+# export some data for Will on my question:
+# d <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+# #d$datatype <- rep("bottomT",length=length(d[,1]))
+# names(d)[names(d)=="dailyT"] <- "bottomT"
+# s <- SST %>% filter(datatype=="MP_SST") %>% select(date,temp)
+# names(s)[names(s)=="temp"] <- "SST"
+# head(s)
+# ds <- left_join(d,s,by="date")
+# ggplot(data=ds,aes(x=date,y=bottomT)) +
+#          geom_line(color="blue") +
+#   geom_line(aes(x=date,y=SST),color="black") +
+#   ggtitle("SST (black) and bottom temp (blue)") +
+#   ylab("T deg C")
+# lines(ds$date,ds$SST)
+# write.csv(ds,file="C:/Users/Mikaela/Documents/GitHub/natividad/data/forWill.csv")
+
+```
+
+## Average temp data among sites
+
+I do this to calculate the offset between SST and in situ temp. I may not need to do this if I use a different method to adjust SST (for exmaple, if I want to adjust time series of stress using the SST to resemble time series of stress using in situ data - Beckstead's idea).
+
+```{r}
+# generate time series of moving average 
+window <- 30 #must be even number
+# Morro Prieto in situ
+d <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(dayindex) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d$mm <- rep(NA,length(d$dayindex))
+ts <- length(d$mm) - ((window/2)-1) - ((window/2)-1) -1 #start and end moving avg not at ends of time series
+for(t in 1:ts){ #step through days
+  d[((window/2)+t),]$mm <- mean(d$dailyT[t:(t+window-1)])} #average T over window}
+d <- d[!is.na(d$mm),]
+d <- d %>% gather("datatype","temp",2:3)
+d$site <- rep("MP",length=length(d$temp))
+MPmm <- d
+rm(ts,t,d)
+# Punta Prieta in situ
+d <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(dayindex) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d$mm <- rep(NA,length(d$dayindex))
+ts <- length(d$mm) - ((window/2)-1) - ((window/2)-1) -1 #start and end moving avg not at ends of time series
+for(t in 1:ts){ #step through days
+  d[((window/2)+t),]$mm <- mean(d$dailyT[t:(t+window-1)])} #average T over window}
+d <- d[!is.na(d$mm),]
+d <- d %>% gather("datatype","temp",2:3)
+d$site <- rep("PP",length=length(d$temp))
+# format julian day averages for in situ data
+mmsit <- rbind(MPmm, d)
+mmsit$datasource <- rep("insitu",length=length(mmsit$dayindex))
+rm(ts,t,d,MPmm)
+# plot site - julian day averages (can i add raw data??)
+# ggplot(data=mmsit,aes(x=dayindex,y=temp,color=site))+
+#   geom_point() + ggtitle("in situ: PP & MP monthly avg")
+
+# Morro Prieto SST
+d <- SST[SST$datatype == "MP_SST",] %>% group_by(dayindex) %>% summarize(dailyT = mean(temp,na.rm=TRUE))
+d$mm <- rep(NA,length(d$dayindex))
+ts <- length(d$mm) - ((window/2)-1) - ((window/2)-1) -1 #start and end moving avg not at ends of time series
+for(t in 1:ts){ #step through days
+  d[((window/2)+t),]$mm <- mean(d$dailyT[t:(t+window-1)])} #average T over window}
+d <- d[!is.na(d$mm),]
+d <- d %>% gather("datatype","temp",2:3)
+d$site <- rep("MP",length=length(d$temp))
+MPmm <- d
+
+# Punta Prieta SST
+d <- SST[SST$datatype == "PP_SST",] %>% group_by(dayindex) %>% summarize(dailyT = mean(temp,na.rm=TRUE))
+d$mm <- rep(NA,length(d$dayindex))
+ts <- length(d$mm) - ((window/2)-1) - ((window/2)-1) -1 #start and end moving avg not at ends of time series
+for(t in 1:ts){ #step through days
+  d[((window/2)+t),]$mm <- mean(d$dailyT[t:(t+window-1)])} #average T over window
+d <- d[!is.na(d$mm),]
+d <- d %>% gather("datatype","temp",2:3)
+d$site <- rep("PP",length=length(d$temp))
+PPmm <- d
+
+# format julian day averages for SST data at both sites
+mmsst <- bind_rows(MPmm,PPmm)
+mmsst$datasource <- rep("SST",length=length(mmsst$temp))
+rm(d,t,PPmm,MPmm,ts)
+
+# julian day averages at both sites for SST & in situ 
+mmjul <- bind_rows(mmsit,mmsst)
+mmjul$sitesr <- paste(mmjul$site,mmjul$datasource,sep="_")
+rm(mmsit,mmsst)
+
+# messy, but plot julian day averages for SST and in situ data with the raw data
+ggplot()+
+  #geom_line(data=in_situ,aes(x=dayindex,y=Temperature,color=Site)) +
+  geom_point(data=mmjul,aes(x=dayindex,y=temp,color=sitesr,shape=datatype)) +
+  ggtitle("PP & MP julian day averages & raw data") 
+```
+
+
+## SST offset to match in situ bottom temperature
+
+Using the moving averages calculated above, find the difference between SST and in situ on each julian day.
+
+```{r}
+# calculate: the average between the moving means of each data type 
+# (in situ, SST) within each site (MP, PP)
+# 1st: in situ data
+d1 <- mmjul %>% filter(datatype=='mm' & datasource=='insitu' & site=='MP')
+d2 <- mmjul %>% filter(datatype=='mm' & datasource=='insitu' & site=='PP')
+instmean <- rowMeans(cbind(d1$temp, d2$temp), na.rm=TRUE)
+rm(d1,d2)
+
+# 2nd: SST data
+d1 <- mmjul %>% filter(datatype=='mm' & datasource=='SST' & site=='MP')
+d2 <- mmjul %>% filter(datatype=='mm' & datasource=='SST' & site=='PP')
+SSTmean <- rowMeans(cbind(d1$temp, d2$temp), na.rm=TRUE)
+rm(d1)
+
+# 3rd: make offset table: SST & in situ difference by julian day
+offset <- SSTmean - instmean
+offsetm <- data.frame(cbind(offset,d2$dayindex))
+colnames(offsetm) <- c("offset","dayindex")
+str(offsetm)
+rm(offset,d2)
+
+# 4th: adjust the raw SST by the offset, offset is per julian day
+SSTo <- left_join(SST,offsetm,by="dayindex") 
+SSTo <- SSTo[!is.na(SSTo$offset),]
+SSTo$SSTaj <- SSTo$temp - SSTo$offset
+
+```
+
+
+
+## Rolling 4 day window of stress accumulation 
+
+This model calculates the linear regression coefficients on 4 days of temp data. And then estimates the 'expected' temperature on the 4th day. This 'expected' temperature is one data point in the smoothed function. The difference between the 'expected' temperature and 'experienced' is a measure of stress. 
+
+```{r}
+
+calc.stress <- function(d,wtsp){
+  
+  # d = data frame with at least these columns: dailyT,date
+    # wtsp = vector of weights that say which days should count more in regression
+  # the length(wtsp) is the window length
+  
+  # note:
+  # add input parm that specifies the type of data (sst or insitu)
+  # so i can add column to output df
+  window <- length(wtsp)
+ 
+  # -- Calculate Expected T in rolling window -- #
+  
+  expectedT <- rep(NA,length=length(d$date)-window)
+  date <- rep(NA,length=length(expectedT))
+  expT <- data.frame(cbind(expectedT,date))
+  rm(expectedT,date)
+  
+  for(i in 1:(length(d$date)-4)){ #step through dates
+    
+    # subset temp data to window
+    tsub <- d[i:(i+window-1),]
+    tsub$dayseq <- c(1:window)
+    tsub <- cbind(tsub,wtsp)
+    
+    # test by plotting (for troubleshooting)
+    #plot(x=tsub$dayseq,y=tsub$dailyT,main="4 data points, 100 in blue")
+    #abline(lm(dailyT~dayseq,data=tsub) )
+    #abline(lm(dailyT~dayseq,data=texp),col="blue" )
+    
+    # add more temp observations in proportion to their weight
+    texp <- tsub[rep(row.names(tsub),tsub$wtsp),1:ncol(tsub)-1]
+    
+    # calc regression, predict 'expected T' on last day in window
+    expT$expectedT[i] <- predict(lm(data=texp,dailyT~dayseq),
+                                 list(dayseq=tsub$dayseq[window]))
+    expT$date[i] <- as.character(tsub$date[window])
+  }
+  expT$date <- as.Date(expT$date,format="%Y-%m-%d")
+  d2 <- left_join(d,expT,by="date")
+  d2$Dstress <- d2$dailyT - d2$expectedT
+  return(d2)
+  rm(i,tsub,texp)
+}
+
+```
+
+
+## Approach 1: Apply stress model on in situ temperature and SST off
+
+1) Plot the raw temperature at each location.
+
+```{r}
+
+# plot 1: raw data at each site
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d2 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+
+ggplot() +
+  geom_line(data=d1, aes(x=date,y=dailyT,color="MP_insitu")) +
+  geom_smooth(data=d1, aes(x=date,y=dailyT,color="MP_insitu"),se=FALSE) +
+  
+  geom_line(data=d2,aes(x=date,y=dailyT,color="PP_insitu")) +
+  geom_smooth(data=d2,aes(x=date,y=dailyT,color="PP_insitu"),se=FALSE) +
+  
+  geom_line(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst")) + 
+  geom_smooth(data=SST[SST$datatype=="PP_SST" & 
+SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="PP_sst"),se=FALSE) + 
+  
+  geom_line(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst")) +
+  geom_smooth(data=SST[SST$datatype=="MP_SST" & SST$date > as.Date("2015-09-12") & SST$date < as.Date("2018-08-17"),],aes(x=date,y=temp,color="MP_sst"),se=FALSE) +
+  
+  ggtitle("Raw in situ and SST data at Morro Prieto & Punta Prieta")
+```
+
+2) Plot average temp per julian day.
+
+```{r}
+ggplot()+
+  #geom_line(data=in_situ,aes(x=dayindex,y=Temperature,color=Site)) +
+  geom_line(data=mmjul[mmjul$datatype=="mm",],
+            aes(x=dayindex,y=temp,color=sitesr)) + 
+  ggtitle("PP & MP julian day averages\nUse this plot to calculate the offset on SST\nOffset = (mean SST per julian day) - (mean insitu per julian day)") 
+
+```
+
+3) Plot the raw in situ & the SST-offset -- do they match?
+
+```{r}
+#plot only dates between 
+
+ggplot() +
+   # raw SST
+   geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17"),],
+              aes(x=date,y=temp),color="grey") +
+  # ajusted SST
+  geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17"),],
+             aes(x=date,y=SSTaj,color=datatype)) +
+  
+  ggtitle("Raw SST (grey) & adjusted SST\nAdjusted SST = SST - (meanSST - meaninsitu)")
+
+
+
+ggplot() +
+  
+  # ajusted SST
+  geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17"),],
+             aes(x=date,y=SSTaj,color=datatype)) +
+  
+  # raw SST
+  # geom_line(data=SSTo[SSTo$date > as.Date("2015-09-12") & SSTo$date < as.Date("2018-08-17"),],
+   #           aes(x=date,y=temp),color="grey") +
+  # 
+  #raw in situ
+  #geom_point(data=in_situ,
+  #            aes(x=date,y=Temperature,color=Site))
+  # raw in situ
+  geom_smooth(data=in_situ,
+              aes(x=date,y=Temperature,color=Site)) +
+  ggtitle("SST is adjusted with offset\n Per julian day: SSTaj = SST - (meanSST - meaninsitu)\nAdjusted SST and in situ lines overlap, but not that great")
+
+```
+
+## Apply stress on adjust SST and in situ temperature
+
+(in progress)
+
+
+
+## Apply stress on SST and in situ temperature
+
+```{r}
+# assign weights: abalone acclimiatize to the temperature today most, and 
+# the temperature on the earliest days least
+#wts <- c(0.1,0.2,0.4,0.8)
+wts <- c(0.1,0.4,0.8)
+wts <- wts/sum(wts)
+wtsp <- round(wts*100,digits=0)
+
+# Calculate daily stress for:
+
+# MP in situ 
+d1 <- in_situ[in_situ$Site == "MorroPrieto",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+MP_inst_stress <- calc.stress(d=d1,wtsp=wtsp)
+MP_inst_stress$datatypesr <- rep("MP_insitu",length=length(MP_inst_stress[,1]))
+MP_inst_stress <- MP_inst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1)
+
+# MP SST
+d1 <- SST[SST$datatype == "MP_SST",]
+names(d1)[names(d1)=="temp"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+MP_sst_stress <- calc.stress(d=d1,wtsp=wtsp)
+MP_sst_stress$datatypesr <- rep("MP_SST",length=length(MP_sst_stress[,1]))
+MP_sst_stress <- MP_sst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1)
+
+# MM in situ
+d1 <- in_situ[in_situ$Site == "PuntaPrieta",] %>% group_by(date) %>% summarize(dailyT = mean(Temperature,na.rm=TRUE))
+d1 <- left_join(d1,datedf,by='date')
+PP_inst_stress <- calc.stress(d=d1,wtsp=wtsp)
+PP_inst_stress$datatypesr <- rep("PP_insitu",length=length(PP_inst_stress[,1]))
+PP_inst_stress <- PP_inst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1)
+
+# MM SST
+d1 <- SST[SST$datatype == "PP_SST",]
+names(d1)[names(d1)=="temp"] <- "dailyT"
+d1 <- left_join(d1,datedf,by='date')
+PP_sst_stress <- calc.stress(d=d1,wtsp=wtsp)
+PP_sst_stress$datatypesr <- rep("PP_SST",length=length(PP_sst_stress[,1]))
+PP_sst_stress <- PP_sst_stress %>% select(date,dailyT,expectedT,Dstress,datatypesr)
+rm(d1)
+
+# subset SST to only dates overlapping with in situ
+d1 <- MP_sst_stress[MP_sst_stress$date %in% MP_inst_stress$date,]
+d1 <- bind_rows(d1,MP_inst_stress)
+
+d2 <- PP_sst_stress[PP_sst_stress$date %in% PP_inst_stress$date,]
+d2 <- bind_rows(d2,PP_inst_stress)
+
+# plot stress for SST & in situ
+ggplot(data=d1[d1$date > as.Date("2016-01-01") & d1$date < as.Date("2016-06-29"),]) +
+  geom_line(aes(x=date,y=Dstress,color=datatypesr)) +
+  xlab("date (2016 only)")
+
+
+```
+
+
+
+
+## Rolling window of temperature variability 
+
+Temperature time series is transformed into one value per day to represent day-by-day 'stress' level. Since abalone are sensitive to temperature variability in short term (~24 hr) (Boch et al. 2018, Vosloo and Vosloo 2010, Tae-Hyung et al. 2006, Calderon-Lievanos et al. 2019), we quantify temperature variation experienced in the most recent 2 days. 
+
+I've found little evidence in the literature that explores the effect of temperature variability experienced over long time periods (1 month or longer, for example) on abalone stress. But there is some evidence on the short-term effects of temperature variability.
+
+* temperature variation of ~4 standard deviations over 24-48 hours causes noticable stress (Boch et al. 2018)
+
+* abalone can adapt to warmer than usual temperature if it is chronic exposure (1 month exposure). But not if it is acute (exposure over 24 hr) (Vosloo and Vosloo 2010)
+
+* physiological changes occur within 24 hours of exposure, but can start to recover after 48 hours of exposure (Tae-Hyung et al. 2006)
+
+* even though short-term events are less likely to cause mass mortalities than extreme events that last several days, there is still an effect of temperature on survival without the synergistic effects of oxygen and ph in the short term. 
+
+  + temperature matters more for survival in the short term (first 24 hr exposure to extremes) than hypoxia. 
+  
+  + but in the long term (96 hr of exposure) hypoxia affects survival more than temperature. 
+  
+  + synergistic effect of temp and hypoxia on survival increases in first 24; consistently mattered after 48 hr exposure (Calderon-Lievanos et al. 2019)
+
+Considering all this, I calculate the standard deviation of temperature variation over the previous `r rollingwindow` days. 
+
+**Important:** need to identify the standard deviation threshold associated with very high stress.
+(for example, sd=4). Then we can identify the frequency of such events. 
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# -- 10 min data -- 
+# 1. prep for looping
+sd_10min <- rep(NA,length=max(d$day)-rollingwindow) #store sd values here
+dayindex <- rep(NA,length=max(d$day)-rollingwindow) #day associated with sdvals
+# 2. for each rolling window time chuck (7 days, 2 days, etc) calculate sd
+system.time(for(i in 1:length(sd_10min)) {
+  sd_10min[i] <- sd(d[d$day %in% seq(from=i,to=i+rollingwindow-1,by=1),]$Temperature_C)
+  dayindex[i] <- i+rollingwindow-1}  )
+rm(i)
+# -- daily T -- 
+# 3. reduce 10 min T data to mean daily T 
+dayTmean <- d %>% group_by(dateUTC) %>% summarise(daymean=mean(Temperature_C))
+dayTmean$day <- seq(from=1,to=length(dayTmean$dateUTC),by=1)
+# 4. prep for looping
+sd_daily <- rep(NA,length=max(d$day)-rollingwindow) 
+date_w_index <- as.character(rep(NA,length=max(d$day)-rollingwindow)) #actual date associated with dayindex
+# 5. for each rolling window time chuck calculate sd using daily mean T
+system.time(for(i in 1:length(sd_daily)) {
+  sd_daily[i] <- sd(dayTmean[dayTmean$day %in% seq(from=i,to=i+rollingwindow-1,by=1),]$daymean)
+  date_w_index[i]<- as.character(dayTmean[dayTmean$day == i+rollingwindow-1,]$dateUTC)})
+rm(i)
+# 6. prep for plotting 
+d1 <- cbind(date_w_index,sd_10min,rep('10min',length=length(dayindex)))
+colnames(d1) <- c('dateUTC','sdvals','datatype')
+d2 <- cbind(date_w_index,sd_daily,rep('dailymean',length=length(dayindex)))
+colnames(d2) <- c('dateUTC','sdvals','datatype')
+sddf <- as.data.frame(rbind(d1,d2))
+sddf$sdvals <- as.numeric(as.character(sddf$sdvals))
+rm(d1,d2,sd_daily,sd_10min,dayindex)
+
+
+# -- daily T 2009-2019 -- 
+# prep for looping
+sd_daily <- rep(NA,length=max(dd$day)-rollingwindow) 
+date_w_index <- as.character(rep(NA,length=max(dd$day)-rollingwindow)) 
+
+# for each rolling window time chuck calculate sd using daily T
+system.time(for(i in 1:length(sd_daily)) {
+  sd_daily[i] <- sd(dd[dd$day %in% seq(from=i,to=i+rollingwindow-1,by=1),]$Temperature_C)
+  date_w_index[i]<- as.character(dd[dd$day == i+rollingwindow-1,]$datetimeNew)
+  })
+rm(i)
+
+# prep for plotting
+sddf$dateUTC <- as.Date(sddf$dateUTC,format="%Y-%m-%d")
+sddf0919 <- as.data.frame(cbind(date_w_index,sd_daily,rep("SST",length=length(date_w_index))))
+colnames(sddf0919) <- c('dateUTC','sdvals','datatype')
+sddf0919$dateUTC <- as.Date(sddf0919$dateUTC,format="%Y-%m-%d")
+sddf0919$sdvals <-  as.numeric(as.character(sddf0919$sdvals))
+
+sddf1 <- as.data.frame(rbind(sddf,sddf0919))
+sddf1 <- sddf1[sddf1$dateUTC %in% sddf$dateUTC,]
+
+str(sddf1)
+
+```
+
+Here is temperature at Punta Prieta 2009-2019. Data is daily SST from satelites. Some of the SST data is missing because of cloud cover. Blue Red line = 20 deg C.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+# plot: temp over time
+ggplot(data=dd,aes(x=datetimeNew,y=Temperature_C)) +
+  geom_line(aes(x=datetimeNew,y=Temperature_C),color="grey") +
+  geom_point(aes(color=flag)) + 
+  geom_hline(yintercept=20,color="red",linetype="dashed") +
+  xlab("year") +
+  ggtitle("Blue dots is estimated SST (flag=1)") +
+  scale_x_date(breaks='1 year',date_labels = "%Y")+
+  theme(axis.text.x = element_text(angle=45,hjust=1))
+
+ggplot(data=dd,aes(x=datetimeNew,y=Temperature_C)) +
+  geom_line() +
+  #geom_smooth(se=F,method="lowess") +
+  stat_smooth(method="loess",span=0.01,se=F) +
+  xlab("year") +
+  ggtitle("Punta Prieta (all years)") +
+  scale_x_date(breaks='1 year',date_labels = "%Y")+
+  theme(axis.text.x = element_text(angle=45,hjust=1))
+
+ggplot(data=dd[dd$datetimeNew < "2004-01-01",],aes(x=datetimeNew,y=Temperature_C)) +
+  geom_line() +
+  #geom_smooth(se=F,method="lowess") +
+  #stat_smooth(method="loess",span=0.1,se=F) +
+  xlab("year") +
+  scale_y_continuous(breaks=seq(15, 25, 2))
+  ggtitle("Punta Prieta (2003)") +
+  scale_x_date(breaks='1 month',date_labels = "%Y-%m")+
+  theme(axis.text.x = element_text(angle=45,hjust=1))
+
+smooth_vals = predict(loess(Temperature_C ~ day,data=dd[dd$datetimeNew < "2004-01-01",],span=0.1),dd[dd$datetimeNew < "2004-01-01",]$day)
+length(smooth_vals)
+length(dd[dd$datetimeNew < "2004-01-01",]$Temperature_C)
+deviations = dd[dd$datetimeNew < "2004-01-01",]$Temperature_C - smooth_vals
+hist(deviations,xlab="Magnitude of temperature deviation (deg C)",main="Distribution of temperature deviations\n (Punta Prieta 2003)")
+
+# hist of raw temperatures in one year
+hist(x=dd[dd$datetimeNew < "2004-01-01",]$Temperature_C,
+     xlab="Magnitude of temperature (deg C)",
+     main="Distribution of temperatures\n (Punta Prieta 2003)")
+
+```
+
+Overlay in situ hourly data, daily average of in situ data, and SST data derived from satellites. 
+
+```{r}
+ggplot(data=d) +
+  geom_point(aes(x=dateUTC,y=Temperature_C),color="grey") + 
+  geom_line(data=dayTmean,aes(x=dateUTC,y=daymean,color="in situ\ndaily mean")) +
+  geom_smooth(data=dayTmean,aes(x=dateUTC,y=daymean,color="in situ\ndaily mean"),se=F) +
+  geom_line(data=dd[dd$datetimeNew %in% dayTmean$dateUTC,],aes(x=datetimeNew,y=Temperature_C,color="SST")) +
+  geom_smooth(data=dd[dd$datetimeNew %in% dayTmean$dateUTC,],aes(x=datetimeNew,y=Temperature_C,color="SST"),se=F)+
+  #geom_hline(yintercept=20,color="black",linetype="dashed") +
+  xlab("day (April-Nov 2018)") +
+  ggtitle("Temperature time series")
+
+ggplot(data=d) +
+  geom_point(aes(x=dateUTC,y=Temperature_C),color="grey") + 
+  geom_line(data=dayTmean,aes(x=dateUTC,y=daymean,color="in situ\ndaily mean")) +
+  geom_smooth(data=dayTmean,aes(x=dateUTC,y=daymean,color="in situ\ndaily mean"),se=F) +
+  geom_point(data=dd[dd$datetimeNew %in% dayTmean$dateUTC,],aes(x=datetimeNew,y=Temperature_C,color=flag)) +
+  geom_line(data=dd[dd$datetimeNew %in% dayTmean$dateUTC,],aes(x=datetimeNew,y=Temperature_C))+
+  geom_smooth(data=dd[dd$datetimeNew %in% dayTmean$dateUTC,],aes(x=datetimeNew,y=Temperature_C),color="black",se=F)+
+  #geom_hline(yintercept=20,color="black",linetype="dashed") +
+  xlab("day (April-Nov 2018)") +
+  ggtitle("Temperature time series")
+```
+
+Compare rolling window of variability between the 3 temperature time series.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+# plots: rolling window of variability
+ggplot(data=sddf1,aes(x=dateUTC,y=sdvals,color=datatype)) +
+  geom_line() + ylim(0,2.5) + geom_smooth(se=F) + 
+  scale_x_date(breaks='1 month',date_labels = "%B")+
+  ggtitle('Rolling window of temp variability: April-Nov 2018') +
+  ylab(paste('Stdev','(rolling window of',rollingwindow,'days)',sep=' '))+
+  xlab("2018")
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+# plots: rolling window of variability
+ggplot(data=sddf0919,aes(x=dateUTC,y=sdvals)) +
+  geom_line() +  
+  ggtitle('Rolling window of temperature variability: 2009-2019\nPunta Prieta') +
+  ylab(paste('Stdev','(rolling window of',rollingwindow,'days)',sep=' ')) +
+  xlab("year")
+```
+
+## Extreme Events
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# Fraction of 10 min intervals T > 20 
+d$newT <- d$Temperature_C - 20
+d$newT <- ifelse(d$newT < 0, 0, d$newT)
+fraction10minabove20 <- length(d[d$newT > 0,]$day)/length(d$day)
+# Fraction of days T > 20
+dayTmean <- d %>% group_by(day) %>% summarise(daymean=mean(Temperature_C)) # reduce 10 min T data to mean daily T 
+dayTmean$newT <- dayTmean$daymean - 20
+dayTmean$newT <- ifelse(dayTmean$newT < 0, 0, dayTmean$newT)
+fractionDailyabove20 <- length(dayTmean[dayTmean$newT > 0,]$day)/length(dayTmean$day)
+# difference in fractions between 10 min and daily T
+fraction10xlarger <- fraction10minabove20/fractionDailyabove20
+
+# Fraction of daily T 2009-2019 that is > 20
+dd$newT <- dd$Temperature_C - 20
+dd$newT <- ifelse(dd$newT < 0, 0, dd$newT)
+fraction0919above20 <- length(dd[dd$newT > 0,]$day)/length(dd$day)
+
+# Count number of extreme events - 10 min 
+count_events <- function(x){  sum(diff(which(x != 0)) != 1) + 1  }
+l <- list(d$newT)
+numevents10min <- sapply(l, count_events)
+rm(l)
+
+# Count number of extreme events - daily mean T
+l <- list(dayTmean$newT)
+numeventsDaily <- sapply(l, count_events)
+rm(l)
+
+# count number of extreme events - 2009-2019
+l <- list(dd$newT)
+numevents0919 <- sapply(l, count_events)
+rm(l)
+```
+
+
+* Fraction of 10 minute intervals in April-Nov 2018 that were >20 = `r round(fraction10minabove20,digits=2)`
+
+* Fraction of days in April-Nov 2018 that were >20 = `r round(fractionDailyabove20,digits=2)`
+
+* Fraction of days in 2009-2019 >20 = `r round(fraction0919above20,digits=2)`
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# histogram of extreme event lengths - 10 min
+df1 <- data.frame("newT"=d$newT)
+devents <- df1 %>% 
+  mutate(event = ifelse(newT > 0, 1, 0),
+         event_cnt = ifelse(event - lag(event, default = 0) >0, 1, 0),
+         event_tot = cumsum(event_cnt))
+devents <- devents[devents$event > 0 & devents$event_tot >0,]
+```
+
+How long do extreme events last in the 10 minute interval temperature data? How many extreme events were there in April-Nov 2018?
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+hist(table(devents$event_tot), main="Frequency of extreme events\n(10 min data, April-Nov 2018)", 
+     xlab="number of 10 min intervals in one event\n(bins=100 minutes)", ylab="Frequency of extreme events")
+```
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# histogram of extreme event lengths - daily
+df2 <- data.frame("newT"=dayTmean$newT)
+devents <- df2 %>% 
+  mutate(event = ifelse(newT > 0, 1, 0),
+         event_cnt = ifelse(event - lag(event, default = 0) >0, 1, 0),
+         event_tot = cumsum(event_cnt))
+devents <- devents[devents$event > 0 & devents$event_tot >0,]
+```
+
+How long do extreme events last when temperature data is averaged per day? How many extreme events?
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+hist(table(devents$event_tot), main="Frequency of extreme events\n(Mean daily T, April-Nov 2018)", 
+     xlab="number of days in extreme event", ylab="Frequency of extreme events",ylim=c(0,5))
+```
+
+```{r error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+# histogram of extreme event lengths - 2009-2019
+df3 <- data.frame("newT"=dd$newT)
+devents <- df3 %>% 
+  mutate(event = ifelse(newT > 0, 1, 0),
+         event_cnt = ifelse(event - lag(event, default = 0) >0, 1, 0),
+         event_tot = cumsum(event_cnt))
+devents <- devents[devents$event > 0 & devents$event_tot >0,]
+```
+
+How many extreme events at Punta Prieta between 2009-2019? How long did they last?
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=6}
+hist(table(devents$event_tot), main="Frequency of extreme events\n(daily T, 2009-2019)", 
+     xlab="number of days in extreme event", ylab="Frequency of extreme events")
+
+```
+
+```{r eval=FALSE, error=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+
+# Integrate temperature during each extreme event - 10 min data
+
+sumT_10min <- rep(NA,length=max(d$day)-rollingwindow)
+for(i in 1:length(sumT_10min)){
+  sumT_10min[i] <- sum(d[d$day %in% seq(from=i,to=i+rollingwindow-1,by=1),]$newT)}
+
+# Integrate temperature during extreme event - daily T mean
+dayTmean <- d %>% group_by(day) %>% summarise(daymean=mean(Temperature_C)) 
+dayTmean$newT <- dayTmean$daymean-20
+dayTmean$newT <- ifelse(dayTmean$newT < 0, 0, dayTmean$newT)
+plot(dayTmean$newT)
+sumT_daily <- rep(NA,length=max(d$day)-rollingwindow)
+for(i in 1:length(sumT_daily)){
+  sumT_daily[i] <- sum(dayTmean[dayTmean$day %in% seq(from=i,to=i+rollingwindow-1,by=1),]$newT)}
+plot(sumT_daily)
+```
+
+
+## Years of in situ data
+```{r}
+dall <- read.csv(file='C:/Users/Mikaela/Documents/GitHub/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv',header = TRUE, stringsAsFactors = FALSE)
+dall <- dall %>% filter(Instrument_Type=='MiniDOT')
+dall$Date <- as.Date(dall$Date,format="%m/%d/%Y")
+
+ggplot(data=dall) +
+  geom_point(aes(x=Date,y=Temperature),color="grey") + 
+  geom_line(data=d,aes(x=dateUTC,y=Temperature_C,color="blue")) +
+  geom_smooth(data=d,aes(x=dateUTC,y=Temperature_C,color="blue"),se=F) +
+  xlab("day") +
+  ggtitle("Temperature time series")
+head(dall)
+```
+
+## References
+
+Boch, C. A., Micheli, F., AlNajjar, M., Monismith, S. G., Beers, J. M., Bonilla, J. C., ... & Woodson, C. B. (2018). Local oceanographic variability influences the performance of juvenile abalone under climate change. Scientific reports, 8(1), 1-12.
+
+Samuel, Calderón-Liévanos, Hernández-Saavedra Norma Yolanda, Lluch-Cota Salvador Emilio, Cruz-Hernández Pedro, Ascencio-Valle Felipe De Jesús, and Sicard María Teresa. "Survival and respiration of green abalone (Haliotis fulgens) facing very short-term marine environmental extremes." Marine and Freshwater Behaviour and Physiology 52, no. 1 (2019): 1-15.
+
+Kim, T. H., Kim, K. J., Choe, M. K., & Yeo, I. K. (2006). Physiological changes of juvenile abalone, Haliotis sieboldii exposed to acute water-temperature stress. Journal of Aquaculture, 19(2), 77-83.
+
+Vosloo, Daléne, and André Vosloo. "Response of cold-acclimated, farmed South African abalone (Haliotis midae) to short-term and long-term changes in temperature." Journal of Thermal Biology 35.7 (2010): 317-323.
