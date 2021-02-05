@@ -1,0 +1,907 @@
+---
+title: ''
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+Updated to include 2018 monitoring data on Jan 18, 2019
+
+-Alexandra Smith
+HMS, Micheli Lab
+
+```{r setup, include=FALSE, message=FALSE}
+rm(list = ls())
+
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE)
+
+library(tidyverse)
+library(skimr)
+library(chron)
+library(lettercase)
+library(tmap)
+library(tmaptools)
+library(proj4)
+library(sp)
+library(magick)
+library(naniar)
+```
+
+```{r load_data, warning=FALSE, message=FALSE, include=FALSE}
+# transects
+#invert_2006_2018 <- read.csv("../Ecological_Monitoring/Eco_Data_Clean/0001_2006_to_2018_All_locations_invert.csv")
+invert_2006_2018 <- read.csv("C:/Users/Mikaela/Box Sync/Natividad/monitoringdata/0001_2006_to_2018_All_locations_invert.csv")
+
+#invert_meta_data <- read.csv("../Ecological_Monitoring/Eco_Data_Clean/0000_2006_to_2018_All_locations_invert_transect_metadata.csv")
+invert_2006_2018 <- read.csv("C:/Users/Mikaela/Box Sync/Natividad/monitoringdata/0000_2006_to_2018_All_locations_invert_transect_metadata.csv")
+
+
+#timed search
+
+timed_search <- read_csv("../Ecological_Monitoring/Eco_Data_Raw/")
+
+timed_search_2018 <- read_csv("../Ecological_Monitoring/Eco_Data_Raw/2018_COBI_Natividad_Abalonetimedsearches.csv")
+
+#load helper functions
+sapply(list.files(pattern="[.]R$", path="../Ecological_Monitoring/Eco_Sandbox/Functions/", full.names=TRUE), source)
+
+colLookup <- read.csv("../Ecological_Monitoring/Eco_Sandbox/colnames_lookup.csv")
+
+siteLookup <- read.csv("../Ecological_Monitoring/Eco_Sandbox/site_lookup.csv")
+```
+
+```{r join_transect_data, warning=FALSE, message=FALSE}
+
+exclude_sites <- c("Vela", "Barrita")
+
+target <- c("Haliotis fulgens", "Haliotis corrugata")
+
+invert_complete <- left_join(invert_2006_2018, invert_meta_data, by = c("Community","Site","Year")) %>%
+  filter(Community == "Isla_Natividad") %>%
+  filter(!Site %in% exclude_sites) %>%
+  filter(Genusspecies %in% target) %>%
+  fillZeros(target, names(.[2:18])) 
+  
+```
+
+```{r select_sites}
+# Sites for timed search data - selected based on the meta plot
+
+  time_sites <- c("Punta_Prieta", "Plana", "Guanera", "Dulce", "Babencho" )
+
+```
+
+```{r clean_timed_search, warning=FALSE, include = FALSE}
+
+
+ts_2018_tmp <- myColNames(timed_search_2018, colLookup) %>%
+  replace_with_na_all(condition = ~.x == "ND") %>%
+  mutate(TimeInitial = hms::hms(TimeInitial),
+         TimeFinal = hms::hms(TimeFinal),
+         Visibility_m = as.numeric(Visibility_m)) 
+
+timed_search_clean <- timed_search %>%
+  #distinct() %>%
+  myColNames(colLookup) %>% 
+  bind_rows(ts_2018_tmp) %>%
+  joinSites(siteLookup) %>%
+  dplyr::mutate(Site = Site_corrected,
+                ID = paste(Date, Site, TimeInitial, DiveNumber, Observer, sep = "_")) %>%
+  filter(Community == "Isla_Natividad") %>%
+  filter(Site %in% time_sites) %>%
+  mutate(full_inital = as.POSIXct(TimeInitial, "%H:%M", tz="US/Pacific"),
+         full_final = as.POSIXct(TimeFinal, "%H:%M", tz="US/Pacific"),
+         search_time = difftime(full_final, full_inital, units = "mins"),
+         TotalAbundance = ifelse(is.na(TotalAbundance), 1, TotalAbundance), 
+         Patch = ifelse(is.na(Patch) & TotalAbundance == 0,0,
+                        Patch),
+        correction = ifelse(Patch == 0, "absent",  "present"),
+         Diameter = as.numeric(Diameter), # I checked this. only one instance
+        DiameterCorrected = ifelse(TotalAbundance != 0, Diameter * 0.709 + 1.157, NA) )
+
+# size_correction <- timed_search_clean %>%
+#   distinct(Diameter, DiameterCorrected) %>%
+#   filter(!is.na(DiameterCorrected))
+# 
+# 
+# 
+# 
+# timed_search_clean <- timed_search_clean %>%
+#   select(-DiameterCorrected)%>%
+#   left_join(size_correction, by = "Diameter")
+  
+unique(timed_search_clean$Genusspecies)
+
+sum(is.na(timed_search_clean$TotalAbundance))
+
+#View(timed_search_clean[(is.na(timed_search_clean$Patch)),])
+
+sort(unique(timed_search_clean$Site))
+
+# There may be a probelm with duplicated rows here  - not sure yet
+```
+
+```{r timed_summary}
+timed_meta <- timed_search_clean %>%
+  group_by(Community, Site, Year, Zone, ID, Genusspecies,correction) %>% 
+  summarise(N = n(), 
+            patches = list(unique(Patch)) ,
+            no.patches = length(unlist(patches)),
+            #patch_w_more_then_one = list(unique(Patch[TotalAbundance >1])),
+            total_search_time = unique(search_time),
+            #error = length(unlist(total_search_time)),
+            DiveNumber = unique(DiveNumber))%>%
+ungroup() %>%
+  mutate(no.patches = ifelse(correction == "absent", 0, no.patches))
+
+
+
+time_summary_Community_level <- timed_meta %>%
+  group_by(Community, Year, Genusspecies) %>%
+  summarise(total_patch = sum(no.patches, na.rm = TRUE),
+            total_time = sum(total_search_time, na.rm = TRUE),
+            total_dives = length(unique(ID)))
+
+time_summary_Site_level <- timed_meta %>%
+  group_by(Community, Site, Year, Genusspecies, Zone) %>%
+  summarise(total_patch = sum(no.patches, na.rm = TRUE),
+            total_time = sum(total_search_time, na.rm = TRUE),
+            total_dives = length(unique(ID)))
+
+time_summary_Zone_level <- time_summary_Site_level %>%
+  group_by(Community, Zone, Year, Genusspecies) %>%
+  summarise(total_patch = sum(total_patch, na.rm = TRUE),
+            total_time = sum(total_time, na.rm = TRUE),
+            total_dives = sum(total_dives))
+#this should be empty
+# time_check <- timed_search_clean %>%
+#   filter(ID %in% timed_meta$ID[timed_meta$error >1])
+```
+# Sampling Effort
+
+Based on this I filtered the data to only include Punta Prieta, La Plana, Guanera, Dulce, and Babencho.
+
+```{r meta_plot}
+
+
+dodge <- position_dodge(width=1) 
+stack <- position_stack(vjust = 0.5, reverse = FALSE)
+
+shading <- data.frame(min = seq(from = 2005.5, to = 2018.5, by = 1),
+           max = seq(from = 2006.5, to = 2019.5, by = 1),
+           col = c(0,1))
+
+p1 = ggplot()+
+  geom_point(data =time_summary_Site_level, aes(x = Year, y = Site, color = Genusspecies, group = Genusspecies, size = total_dives),  position = dodge, alpha = 0.8 )+
+  #, shape = 1) <- for hollow circles
+  scale_x_continuous(breaks=seq(2006,2018, 1))+
+  #facet_grid(Community~., scales = "free", space="free")+
+  geom_rect(data = shading,
+            aes(xmin = min, xmax = max, ymin = -Inf, ymax =Inf,
+                fill = factor(col)), alpha = 0.2) +
+  scale_fill_manual(values = c("white", "gray53")) +
+  theme_minimal()+
+  coord_cartesian(xlim = c(2006, 2018))+
+  labs(color = "Species",
+         size = "No. dives",
+       title = "Available timed search surveys")+
+  guides(fill = FALSE)
+
+p1
+
+
+# STOP
+#This should not be run unless you remove the filter to include all SITES
+
+# ggsave("../Ecological_Monitoring/Data_Overview/available_timed_searches_Natividad.png", #output name
+#         plot = p1,
+#        device = "png") 
+
+# STOP
+#This should not be run unless you remove the filter to include all COMMUNITIES
+
+# ggsave("../Ecological_Monitoring/Data_Overview/available_timed_searches_All.pdf", #output name
+#        plot = out5,
+#        device = "pdf",
+#         width = 11, height = 8)
+```
+
+
+
+# Abundance
+
+### All species at all sites
+```{r all_together}
+timed_search_clean %>%
+  filter(Site %in% time_sites) %>%
+  left_join(time_summary_Community_level, by = c("Community", "Year", "Genusspecies")) %>%
+  group_by(Genusspecies, Year) %>%
+  summarise(all_abs_60min = (sum(TotalAbundance) * 60) / (unique(total_time))) %>%
+  ungroup() %>%
+  group_by(Year) %>%
+  summarise(all_abs_60min = sum(all_abs_60min)) %>%
+  
+  ggplot(aes(Year, all_abs_60min)) + 
+  geom_point(size=2) +
+  geom_line()+
+  #geom_smooth(method = "lm", se = FALSE)+
+  theme_minimal()+
+  scale_x_continuous(limits = c(2006,2018), breaks = c(seq(2006,2018,2))) +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(y = "mean number of abalone found per 60 mins of searching")
+```
+
+### By species
+```{r overall_abundance}
+timed_search_clean %>%
+  filter(Site %in% time_sites) %>%
+  left_join(time_summary_Community_level, by = c("Community", "Year", "Genusspecies")) %>%
+  group_by(Genusspecies, Year) %>%
+  summarise(all_abs_60min = (sum(TotalAbundance) * 60) / (unique(total_time))) %>%
+  ungroup() %>%
+  
+  ggplot(aes(Year, all_abs_60min, color = Genusspecies)) + 
+  geom_point(size=2) +
+  geom_line()+
+  #geom_smooth(method = "lm", se = FALSE)+
+  theme_minimal()+
+  scale_x_continuous(limits = c(2006,2018), breaks = c(seq(2006,2018,2))) +
+  labs(y = "mean number of abalone found per 60 mins of searching")
+```
+
+
+### By species and zone
+
+
+```{r by_zone}
+timed_search_clean %>%
+  filter(Site %in% time_sites) %>%
+  left_join(time_summary_Zone_level, by = c("Community", "Zone", "Year", "Genusspecies")) %>%
+  group_by(Genusspecies, Year, Zone) %>%
+  summarise(all_abs_60min = (sum(TotalAbundance) * 60) / (unique(total_time))) %>%
+  ungroup() %>%
+  
+  ggplot(aes(Year, all_abs_60min, color = Genusspecies)) + 
+  geom_point(size=2, aes(shape  = Zone)) +
+  geom_line(aes(lty  = Zone))+
+    scale_y_continuous(limits = c(0,80), breaks = c(seq(0,80,20))) +
+  facet_grid(Genusspecies~.)+
+  theme_minimal()+
+  scale_x_continuous(limits = c(2006,2018), breaks = c(seq(2006,2018,2))) +
+  labs(y = "mean number of abalone found per 60 mins of searching", x = "") + theme(axis.line = element_line(linetype = "solid"), 
+    axis.title = element_text(size = 12), 
+    axis.text = element_text(size = 14, color = "black"), 
+    axis.text.x = element_text(size = 14), 
+    axis.text.y = element_text(size = 14)) +labs(x = NULL)
+```
+
+### By species and site
+
+```{r by_site}
+timed_search_clean %>%
+  filter(Site %in% time_sites) %>%
+  left_join(time_summary_Site_level, by = c("Community","Site","Zone", "Year", "Genusspecies")) %>%
+  group_by(Genusspecies, Year, Zone, Site) %>%
+  summarise(all_abs_60min = (sum(TotalAbundance) * 60) / (unique(total_time))) %>%
+  ungroup() %>%
+  
+  ggplot(aes(Year, all_abs_60min, color = Site)) + 
+  geom_point(size=2, aes(shape  = Zone)) +
+  geom_line(aes(lty  = Zone))+
+  facet_grid(Genusspecies~.)+
+  theme_minimal()+
+  scale_x_continuous(limits = c(2006,2018), breaks = c(seq(2006,2018,2))) +
+  labs(y = "mean number of abalone found per 60 mins of searching", x = "")+ theme(axis.line = element_line(linetype = "solid"), 
+    axis.title = element_text(size = 12), 
+    axis.text = element_text(size = 14, color = "black"), 
+    axis.text.x = element_text(size = 14), 
+    axis.text.y = element_text(size = 14)) +labs(x = NULL)
+
+```
+
+
+# Aggregations
+
+```{r all_together_agg}
+time_summary_Community_level %>%
+  filter(Year > 2006) %>%
+  group_by(Year) %>%
+  summarise(total_aggreations = sum( (total_patch*60) / total_time)) %>%
+  
+  ggplot(aes(Year, total_aggreations)) + 
+  geom_point(size=2) +
+  geom_line()+
+  #geom_smooth(method = "lm", se = FALSE)+
+  theme_minimal()+
+  scale_x_continuous(limits = c(2007,2018), breaks = c(seq(2007,2018,2))) +
+  scale_y_continuous(limits = c(0,20)) +
+  labs(y = "number of aggreations abalone found \nper 60 mins of searching")
+```
+
+
+
+### By species
+
+
+```{r all_sites}
+time_summary_Community_level %>%
+  filter(Year > 2006) %>%
+  group_by(Year, Genusspecies) %>%
+  summarise(total_aggreations = sum( (total_patch*60) / total_time)) %>%
+  ungroup()%>%
+  
+  ggplot( aes(Year, total_aggreations, color = Genusspecies)) + 
+  geom_point(size=2) +
+  geom_line()+
+  #facet_grid(Genusspecies~.)+
+  theme_minimal()+
+  scale_x_continuous(limits = c(2007,2018), breaks = c(seq(2007,2018,2))) +
+  scale_y_continuous(limits = c(0,20)) +
+  labs(y = "number of aggreations abalone found \nper 60 mins of searching")
+```
+
+### By zone
+
+
+```{r zone}
+time_summary_Zone_level %>%
+  filter(Year > 2006) %>%
+  group_by(Year, Genusspecies, Zone) %>%
+  summarise(total_aggreations = total_patch*60 / total_time) %>%
+  ungroup()%>%
+  
+  ggplot( aes(Year, total_aggreations, color = Genusspecies)) + 
+  geom_point(size=2) +
+  geom_line(aes(lty = Zone))+
+  facet_grid(Genusspecies~.)+
+  theme_minimal()+
+  scale_x_continuous(limits = c(2007,2018), breaks = c(seq(2007,2018,2))) +
+  scale_y_continuous(limits = c(0,20)) +
+  labs(y = "number of aggreations abalone found \nper 60 mins of searching")
+```
+
+# Size Frequency
+
+It looks like you can start to see evidence of a recruitment pulse in 2016 & 2017
+
+
+
+### All species combined
+
+```{r histograms, fig.height=5, fig.width=9}
+size_long <- timed_search_clean %>%
+  filter(TotalAbundance > 0) %>%
+  mutate(Diameter = as.numeric(Diameter),
+         DiameterCorrected = ifelse(is.na(DiameterCorrected) & !is.na(Diameter), Diameter-3, DiameterCorrected)) %>% 
+  select(Year, Genusspecies, TotalAbundance, Diameter, DiameterCorrected, Zone, Site, search_time) %>%
+  reshape::untable(.$TotalAbundance)
+  
+#new= bind_rows(old, size_long[size_long$Year ==2018,])
+
+  ggplot(size_long, aes(x = round(DiameterCorrected, digits = 1), group = Year))+
+  geom_density(size  =1) +
+  facet_wrap(~Year, nrow = 2)+
+  theme_minimal()+
+    labs(x = "Shell diameter (cm)")
+
+```
+
+### Haliotis corrugata
+
+```{r hist_corrugata, fig.height=5, fig.width=9}
+
+  ggplot(filter(size_long, Genusspecies == "Haliotis corrugata", Year %in% c(2008,2010,2017,2018)), aes(x = DiameterCorrected))+
+  geom_histogram(fill = "#F8766D", color = "black", binwidth = 2) +
+  facet_wrap(~Year, nrow = 2, scales = ("free_y"))+
+  theme_minimal()+
+    labs(x = "Shell diameter (cm)")+
+ theme(strip.background = element_rect(fill = "azure3"), 
+    strip.text = element_text(face = "bold", 
+        colour = "black", size = 12))
+
+```
+
+
+### Haliotis fuglens
+
+```{r hist_fuglens, fig.height=5, fig.width=9}
+
+  # ggplot(filter(size_long, Genusspecies == "Haliotis fulgens"), aes(x = DiameterCorrected))+
+  # geom_density(color = "#00BFC4", size  =1) +
+  # facet_wrap(~Year, nrow = 2)+
+  # theme_minimal()+
+  #   labs(x = "Shell diameter (cm)")
+
+  ggplot(filter(size_long, Genusspecies == "Haliotis fulgens", Year %in% c(2006,2010,2017,2018)), aes(x = DiameterCorrected))+
+  geom_histogram(fill = "#00BFC4", color = "black", binwidth = 2) +
+  facet_wrap(~Year, nrow = 2, scales = ("free_y"))+
+  theme_minimal()+
+    labs(x = "Shell diameter (cm)")+
+ theme(strip.background = element_rect(fill = "azure3"), 
+    strip.text = element_text(face = "bold", 
+        colour = "black", size = 12))
+
+```
+## By Zone
+#Density
+
+
+```{r hist_corrugata, fig.height=5, fig.width=9}
+
+  ggplot(filter(size_long, Genusspecies == "Haliotis corrugata"), aes(x = DiameterCorrected, group = Year))+
+  geom_density(color = "#F8766D", size  =1) +
+  facet_wrap(~Year, nrow = 2)+
+  theme_minimal()+
+    labs(x = "Shell diameter (cm)")
+
+
+```
+
+#Histogram
+### Haliotis corrugata
+
+```{r hist_corrugata_zone, fig.height=5, fig.width=9}
+
+  ggplot(filter(size_long, Genusspecies == "Haliotis corrugata"), aes(x = DiameterCorrected, group = Zone, fill = Zone))+
+  geom_density( size  =1,alpha = 0.4) +
+  facet_wrap(~Year, nrow = 2)+
+  theme_minimal()+
+    labs(x = "Shell diameter (cm)")
+
+
+```
+
+
+### Haliotis fulgens
+
+```{r hist_fulgens_zone, fig.height=5, fig.width=9}
+
+  ggplot(filter(size_long, Genusspecies == "Haliotis fulgens"), aes(x = DiameterCorrected, group = Zone, fill = Zone))+
+  geom_density( size  =1, alpha = 0.4) +
+  facet_wrap(~Year, nrow = 2)+
+  theme_minimal()+
+    labs(x = "Shell diameter (cm)")
+
+
+```
+
+## By Site
+
+### Haliotis fulgens
+
+```{r hist_fulgens_site, fig.height=7, fig.width=10}
+
+ggplot(filter(size_long, Genusspecies == "Haliotis fulgens"), aes(x = DiameterCorrected, group = Site, fill = Site, color = Site))+
+  geom_density( size  =1,, alpha = 0.1) +
+  facet_wrap(~Year, nrow = 2, scales = "free_y")+
+  theme_minimal()+
+  labs(x = "Shell diameter (cm)")+
+  theme(strip.background = element_rect(fill = "azure3"), 
+        strip.text = element_text(face = "bold", 
+                                  colour = "black", size = 12),
+        legend.position = "top", legend.direction = "horizontal")
+
+
+```
+
+
+
+# Aggregation Density
+
+### Abundance
+
+```{r data}
+
+agg_density <- timed_search_clean %>%
+  mutate(PatchID = paste(ID, Patch, sep = "-"),
+         Diameter = as.numeric(Diameter),
+         DiameterCorrected = ifelse(is.na(DiameterCorrected) & !is.na(Diameter), Diameter-3, DiameterCorrected)) %>%
+  group_by(Community, Site, Year, Zone, PatchID, Genusspecies,correction) %>% 
+  summarise(N = n(), 
+            patch_abundance = sum(TotalAbundance) ,
+            mean_size = mean(DiameterCorrected, na.rm = TRUE),
+            min_size = min(DiameterCorrected, na.rm = TRUE),
+            max_size = max(DiameterCorrected, na.rm = TRUE),
+            sd_size = sd(DiameterCorrected, na.rm = TRUE))%>%
+ungroup() 
+
+patchs_greater_than_1 <- agg_density %>%
+  filter(patch_abundance > 1 ) %>%
+  group_by(Community, Site, Year, Zone,Genusspecies) %>%
+  summarise(patchs_w_more_than_1 = n())
+
+```
+
+
+
+```{r boxplot_abundance}
+agg_density %>%
+  filter(correction != "absent") %>%
+  
+  ggplot(aes(as.factor(Year), patch_abundance, color = Genusspecies))+
+  geom_boxplot(aes( color = Genusspecies), position = "dodge")+
+  theme_minimal()+
+  labs(x = "Year", y = "Abundance within aggregation")
+
+```
+
+### Size
+
+```{r boxplot_meanSize}
+agg_density %>%
+  filter(correction != "absent") %>%
+  
+  ggplot(aes(as.factor(Year), mean_size, color = Genusspecies))+
+  geom_boxplot(aes( color = Genusspecies), position = "dodge")+
+  theme_minimal()+
+  labs(x = "Year", y = "Mean shell diameter within aggregation (cm)")
+
+```
+
+# Aggregations
+
+```{r agg_more_than_one}
+
+patchs_greater_than_1 %>%
+  group_by(Community, Year, Genusspecies) %>%
+  summarise(more = sum(patchs_w_more_than_1)) %>%
+  ungroup()%>%
+  full_join(time_summary_Community_level) %>%
+  group_by(Year)%>%
+  summarise(total_aggreations = sum( (total_patch*60) / total_time),
+            more_aggs = sum( (more*60) / total_time),
+    percent_more = sum(more)/sum(total_patch))%>%
+  filter(Year > 2006) %>%
+  
+  ggplot(aes(Year, total_aggreations)) + 
+  geom_point(size=2) +
+  geom_line()+
+  geom_point(aes(Year, more_aggs), color = "darkred")+
+  geom_line(aes(Year, more_aggs),color = "darkred")+
+  #geom_smooth(method = "lm", se = FALSE)+
+  theme_minimal()+
+  scale_x_continuous(limits = c(2007,2018), breaks = c(seq(2007,2018,2))) +
+  scale_y_continuous(limits = c(0,20)) +
+  labs(y = "number of aggreations abalone found \nper 60 mins of searching")
+
+  # 
+  # ggplot(aes(Year, percent_more*100)) + 
+  # geom_point(size=2) +
+  # geom_line()+
+  # #geom_smooth(method = "lm", se = FALSE)+
+  # theme_minimal()+
+  # scale_x_continuous(limits = c(2007,2018), breaks = c(seq(2007,2018,2))) +
+  # scale_y_continuous(limits = c(0,100)) +
+  # labs(y = "number of aggreations abalone found \nper 60 mins of searching")
+```
+# Mapping Aggregations
+
+## Animated
+```{r map_setup}
+
+bbx <- matrix(c(-115.23,  27.835,-115.135, 27.90), ncol = 2)
+
+natividad <- read_shape('./map_data/natividad/islaNatividad.shp') %>%
+  spTransform(CRS("+proj=longlat +datum=WGS84 +units=m"))
+
+blocks <- read_shape('map_data/natividad/blocks/Reservas_sitios_control.shp') %>%
+  spTransform(CRS("+proj=longlat +datum=WGS84 +units=m")) 
+
+blocks$Zone <- ifelse(blocks$Tipo == "Bloque reserva", "Reserve", "Control")
+```
+
+```{r map_data}
+
+map_patches_df <- timed_search_clean %>% 
+  filter(TotalAbundance > 0) %>%
+  mutate(PatchID = paste(ID, Patch, sep = "-"),
+         Diameter = as.numeric(Diameter),
+         DiameterCorrected = ifelse(is.na(DiameterCorrected) & !is.na(Diameter), Diameter-3, DiameterCorrected)) %>%
+  group_by(Community, Site, Year, Zone, Genusspecies,correction, Latitude, Longitude) %>% 
+  summarise(N = n(), 
+            patch_abundance = sum(TotalAbundance) ,
+            mean_size = mean(DiameterCorrected, na.rm = TRUE),
+            min_size = min(DiameterCorrected, na.rm = TRUE),
+            max_size = max(DiameterCorrected, na.rm = TRUE),
+            sd_size = sd(DiameterCorrected, na.rm = TRUE))%>%
+ungroup() %>%
+  mutate(Latitude = as.numeric(Latitude),
+         Longitude = as.numeric(Longitude),
+         myID = seq(1, dim(.)[[1]], 1 )) %>%
+   filter(!is.na(Latitude)) 
+  # filter(Year ==2013)
+
+## Looking at the map I found the following data points that were very clearly in the wrong place. I wrote a function that randomly samples other points with the same Site as the erroneous data and reassigns a reasonable coordinate
+
+coord_errors <- c(177,299,418,32,428, 102,101, 459, 307,105,106,432)
+
+coord_pool <-  map_patches_df %>%
+  filter(!myID %in% coord_errors) %>%
+  select(Site, Latitude, Longitude)
+
+random_coord <- function(matchSite, latORlong, pool){
+
+  out = vector(length = length(matchSite))
+    
+  for (i in  1:length(matchSite)){
+  
+  tmp = filter(pool, Site == matchSite[i])
+ 
+  j = sample(seq(1,length(pool),1),1)
+  
+  out[i] = tmp[[j, as.character(latORlong)]]
+  
+  
+  }
+  return(out)
+  }
+
+
+
+coordinate_correction <- map_patches_df %>%
+  filter(myID %in% coord_errors) %>%
+  mutate(Latitude = random_coord(Site, "Latitude", coord_pool),
+         Longitude = random_coord(Site, "Longitude", coord_pool))
+
+map_patches_corrected <- map_patches_df %>%
+  filter(!myID %in% coord_errors) %>%
+  bind_rows(coordinate_correction) %>%
+  filter(Year %in% c(2006,2012,2017))
+
+
+## Convert to spatial DF
+
+xy = select(map_patches_corrected, Longitude, Latitude)
+
+map_patches <- SpatialPointsDataFrame(coords = xy, data =map_patches_corrected,
+                               proj4string = CRS("+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"))
+
+```
+
+```{r test_data, eval = FALSE}
+
+test_map_patches_df <- timed_search_clean %>%
+  filter(TotalAbundance > 0) %>%
+  mutate(PatchID = paste(ID, Patch, sep = "-"),
+         Diameter = as.numeric(Diameter),
+         DiameterCorrected = ifelse(is.na(DiameterCorrected) & !is.na(Diameter), Diameter-3, DiameterCorrected)) %>%
+  group_by(Community, Site, Year, Zone, Genusspecies,correction, Latitude, Longitude) %>%
+  summarise(N = n(),
+            patch_abundance = sum(TotalAbundance) ,
+            mean_size = mean(DiameterCorrected, na.rm = TRUE),
+            min_size = min(DiameterCorrected, na.rm = TRUE),
+            max_size = max(DiameterCorrected, na.rm = TRUE),
+            sd_size = sd(DiameterCorrected, na.rm = TRUE))%>%
+ungroup() %>%
+  mutate(Latitude = as.numeric(Latitude)) %>%
+   filter(Genusspecies == "Haliotis corrugata", !is.na(Latitude)) %>%
+   filter(Year ==2013)
+
+xy = select(test_map_patches_df, Longitude, Latitude)
+
+test_map_patches <- SpatialPointsDataFrame(coords = xy, data =test_map_patches_df,
+                               proj4string = CRS("+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"))
+
+```
+
+```{r test_map, eval = FALSE}
+qtm(natividad,bbox = bbx)+
+  tm_shape(blocks)+
+  tm_fill("Zone", lty = "Zone", title = "")+
+  tm_borders()+
+  tm_shape(test_map_patches)+
+  tm_bubbles(size = "patch_abundance",
+             scale = 3,
+             title.size = "No. of Individuals",
+             col =  "mean_size",
+             palette = rev(heat.colors(8)),
+             alpha = 0.9,
+             border.alpha = 1,
+             border.col = "black",
+             title.col = "Mean shell diameter",
+  )+
+  #tm_text("Site")+
+  tm_facets("Year", nrow = 1, ncol = 1,free.scales.symbol.size = FALSE)+
+  tm_legend(legend.position = c("right", "top"),
+            legend.bg.color = "white")+
+  tm_layout(outer.margins = c(0.1, 0.1 , 0.05, 0.01),
+            bg.color = "black")+ # , , r ,
+  tm_grid(x = NA, y = NA, n.x = NA, n.y = NA, projection = NA,
+          col = NA, lwd = 1, alpha = 0, labels.size = 0.6, labels.col = NA,
+          labels.rot = c(0, 0), labels.format = list(big.mark = ","),
+          labels.margin.x = 0, labels.margin.y = 0, labels.inside.frame = FALSE)
+```
+### Haliotis corrugata
+
+```{r animated_map_corrugata}
+
+
+m1 = qtm(natividad,bbox = bbx)+
+  tm_shape(blocks)+
+  tm_fill("Zone", 
+          palette = c("#63B8FF" ,"#0000CD"), 
+          #labels = c("Reserva", "Control"),
+          title = "")+
+  tm_borders()+
+  tm_shape(map_patches[map_patches$Genusspecies == "Haliotis corrugata", ])+
+  tm_bubbles(size = "patch_abundance",  
+             scale = 3, 
+             title.size = "No. of Individuals",
+             #title.size = "Abundancia",
+             sizes.legend = c(10,50,100),
+             perceptual = TRUE,
+             col =  "mean_size",
+             palette = rev(heat.colors(8)),
+             alpha = 0.9, 
+             border.alpha = 1,
+             border.col = "black",
+             textNA = "Falta datos",
+             title.col = "Mean shell diameter (cm)"
+             #title.col = "Talla promedio (cm)"
+  )+
+  tm_compass(position = c("left", "bottom"))+
+    tm_scale_bar(size =0.5, text.color = "white", color.dark = "darkgrey", color.light = "white",  position = c("left", "bottom"),
+  just = NA)+
+  #tm_text("Site")+
+  tm_facets("Year", nrow = 1, ncol = 1,free.scales.symbol.size = FALSE)+
+  tm_legend(legend.position = c("right", "top"))+
+  tm_layout(outer.margins = c(0.1, 0.1 , 0.05, 0.01),
+            bg.color = "black",
+            attr.color = "white")+ # , , r ,
+  tm_grid( lwd = 1, alpha = 0, labels.size = 0.6, labels.rot = c(0, 0), labels.format = list(big.mark = ","), labels.inside.frame = FALSE, labels.col = "black") 
+  
+
+animation_tmap(m1, filename="aggregation_maps_corrugata_cropped.gif", width=2500, delay=200)
+#animation_tmap(m1, filename="aggregation_maps_corrugata_espanol.gif", width=2500, delay=200)
+
+```
+
+![Abalone aggreations Isla Natividad 2006-2018](aggregation_maps_corrugata.gif)
+
+### Haliotis fulgens
+
+```{r animated_map_fulgens}
+m2 = qtm(natividad,bbox = bbx)+
+  tm_shape(blocks)+
+  tm_fill("Zone", 
+          palette = c("#63B8FF" ,"#0000CD"), 
+          #labels = c("Reserva", "Control"),
+          title = "")+
+  tm_borders()+
+  tm_shape(map_patches[map_patches$Genusspecies == "Haliotis fulgens", ])+
+ tm_bubbles(size = "patch_abundance",  
+             scale = 3, 
+             title.size = "No. of Individuals",
+             #title.size = "Abundancia",
+             sizes.legend = c(10,50,100),
+             perceptual = TRUE,
+             col =  "mean_size",
+             palette = rev(heat.colors(8)),
+             alpha = 0.9, 
+             border.alpha = 1,
+             border.col = "black",
+             textNA = "Falta datos",
+             title.col = "Mean shell diameter (cm)"
+             #title.col = "Talla promedio (cm)"
+  )+
+  tm_compass(position = c("left", "bottom"))+
+    tm_scale_bar(size =0.5, text.color = "white", color.dark = "darkgrey", color.light = "white",  position = c("left", "bottom"),
+  just = NA)+
+  #tm_text("Site")+
+  tm_facets("Year", nrow = 1, ncol = 1,free.scales.symbol.size = FALSE)+
+  tm_legend(legend.position = c("right", "top"))+
+  tm_layout(outer.margins = c(0.1, 0.1 , 0.05, 0.01),
+            bg.color = "black",
+            attr.color = "white")+ # , , r ,
+  tm_grid( lwd = 1, alpha = 0, labels.size = 0.6, labels.rot = c(0, 0), labels.format = list(big.mark = ","), labels.inside.frame = FALSE, labels.col = "black") 
+  
+animation_tmap(m2, filename="aggregation_maps_fulgens.gif", width=2500, delay=200)
+#animation_tmap(m2, filename="aggregation_maps_fulgens_espanol.gif", width=2500, delay=200)
+
+```
+
+
+![H. fulgens aggreations Isla Natividad 2006-2018](aggregation_maps_fulgens.gif)
+
+
+
+## Static
+
+### H. corrugata
+```{r eval = F}
+
+bbx2 <- matrix(c(-115.23,  27.835,-115.135, 27.905), ncol = 2)
+
+for (i in 2006:2018){
+
+tmp = filter(map_patches_corrected, Year == i,Genusspecies == "Haliotis corrugata", !is.na(Latitude))
+
+xy = select(tmp, Longitude, Latitude)
+
+map_patches <- SpatialPointsDataFrame(coords = xy, data =tmp,
+                               proj4string = CRS("+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"))
+
+p = qtm(natividad,bbox = bbx2, title=paste0("H. corrugata \n", as.character(i)))+
+tm_shape(blocks)+
+  tm_fill("Zone")+
+  tm_borders()+
+tm_shape(map_patches[map_patches$Genusspecies == "Haliotis corrugata", ])+
+ # tm_bubbles("patch_abundance", "mean_size", size.max = 100)+
+   tm_bubbles(size = "patch_abundance",  
+              size.max =100,
+             scale = 3, 
+             title.size = "No. of Individuals",
+             #title.size = "Abundancia",
+             sizes.legend = c(10,50,100),
+             perceptual = TRUE,
+             col =  "mean_size",
+             palette = rev(heat.colors(8)),
+             alpha = 0.9, 
+             border.alpha = 1,
+             border.col = "black",
+             textNA = "Falta datos",
+             title.col = "Mean shell diameter (cm)"
+             #title.col = "Talla promedio (cm)"
+  )+
+    tm_compass(position = c("left", "bottom"))+
+    tm_scale_bar(size =0.5, text.color = "white", color.dark = "darkgrey", color.light = "white",  position = c("left", "bottom"),
+  just = NA)+
+  #tm_text("Site")+
+  tm_legend(legend.position = c("right", "top"))+
+  tm_layout(outer.margins = c(0.1, 0.1 , 0.05, 0.01),
+            bg.color = "black",
+            attr.color = "white")+ # , , r ,
+  tm_grid( lwd = 1, alpha = 0, labels.size = 0.6, labels.rot = c(0, 0), labels.format = list(big.mark = ","), labels.inside.frame = FALSE, labels.col = "black") 
+  #tm_text("myID")+
+# tm_layout(outer.margins = c(0.04, 0.04, 0.02, 0.04), bg.color = "black",
+#             attr.color = "white")+
+#   tm_grid(x = NA, y = NA, n.x = NA, n.y = NA, projection = NA,
+#   col = NA, lwd = 1, alpha = 0, labels.size = 0.6, labels.col = NA,
+#   labels.rot = c(0, 0), labels.format = list(big.mark = ","),
+#   labels.margin.x = 0, labels.margin.y = 0, labels.inside.frame = FALSE)
+
+print(p)
+
+}
+
+```
+
+### H. fulgens
+```{r eval = F}
+
+bbx2 <- matrix(c(-115.23,  27.835,-115.135, 27.905), ncol = 2)
+
+for (i in 2006:2018){
+
+tmp = filter(map_patches_corrected, Year == i,Genusspecies == "Haliotis fulgens", !is.na(Latitude))
+
+xy = select(tmp, Longitude, Latitude)
+
+map_patches <- SpatialPointsDataFrame(coords = xy, data =tmp,
+                               proj4string = CRS("+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"))
+
+p = qtm(natividad,bbox = bbx2, title=paste0("H. fulgens \n", as.character(i)))+
+tm_shape(blocks)+
+  tm_fill("Zone")+
+  tm_borders()+
+tm_shape(map_patches[map_patches$Genusspecies == "Haliotis fulgens", ])+
+  tm_bubbles("patch_abundance", "mean_size")+
+  #tm_text("myID")+
+tm_layout(outer.margins = c(0.04, 0.04, 0.02, 0.04), bg.color = "black",
+            attr.color = "white")+
+  tm_grid(x = NA, y = NA, n.x = NA, n.y = NA, projection = NA,
+  col = NA, lwd = 1, alpha = 0, labels.size = 0.6, labels.col = NA,
+  labels.rot = c(0, 0), labels.format = list(big.mark = ","),
+  labels.margin.x = 0, labels.margin.y = 0, labels.inside.frame = FALSE)
+
+print(p)
+
+}
+
+```
+
+
+

@@ -288,7 +288,7 @@ p3<-ggplot() +
 ```
 
 ```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=9, fig.height=21}
-plot_grid(p1,p2,p3,nrow=3)
+plot_grid(p1,p2,p3,labels=c("a)","b)","c)"),nrow=3)
 
 ```
 

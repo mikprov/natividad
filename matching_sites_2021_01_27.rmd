@@ -1,0 +1,271 @@
+---
+title: "Matching Sites"
+author: "Mikaela M. Provost"
+date: "1/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(sf)
+
+
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+
+
+tdf <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/0001_2006_to_2018_All_locations_invert.csv",stringsAsFactors = FALSE)
+tdf <- tdf %>% filter(Species == "fulgens") #just green abalone
+tdf <- tdf[!is.na(tdf$Latitude),] # removing NAs
+tdf <- tdf[!is.na(tdf$Longitude),]
+
+tdf <- tdf %>% add_count(Site,Year,Month) #for each site, in each year-month, count number of transects
+tdf <- tdf %>% group_by(Site,Year,Month) %>%
+  mutate(avgAbundance=mean(TotalAbundance)) %>%
+  mutate(varAbundance=var(TotalAbundance)) %>%
+  mutate(sdAbundance=sd(TotalAbundance))
+
+# ---
+# Number of transects per site
+tdf$Site <- factor(tdf$Site,levels=unique(tdf[order(tdf$Latitude),]$Site))
+pcount <- ggplot(data=tdf) +
+  geom_bar(aes(x=Site)) +
+  ylab("Number of transects") +
+  theme(axis.text.x = element_text(angle = 40, hjust=1))
+
+# get the shapefile
+f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/countries.shp")
+
+# filter tdf to get only sites and lat and long
+locationsTemp <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+names(locationsTemp)[1] <- "Site"
+
+
+# ---
+# Map everything
+
+map1<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(min(tdf$Latitude),max(tdf$Latitude)),
+           xlim=c(min(tdf$Longitude),max(tdf$Longitude))) +
+  geom_point(data=tdf,aes(x=Longitude,y=Latitude,color=Site)) +
+  geom_point(data=locationsTemp,aes(x=Longtitude,y=Latitude),color="black") +
+  geom_text_repel(data=locationsTemp[!locationsTemp$Site %in% c("VanDamme","Monterey","LaJolla"),],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  color="grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Site locations")
+
+
+
+# ---
+# Map north area (sportfish)
+map2<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(28.8,max(tdf$Latitude)),
+           xlim=c(min(tdf$Longitude),-115)) +
+  geom_point(data=tdf[tdf$Latitude > 28.8 & tdf$Longitude < -115,],
+             aes(x=Longitude,y=Latitude,color=Site)) +
+  geom_point(data=locationsTemp,aes(x=Longtitude,y=Latitude),color="black") +
+  geom_text_repel(data=locationsTemp[locationsTemp$Site == "Sportfish",],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  color="grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("North region")
+
+# ---
+# Map MP and PP region
+map3<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(27,28.5),
+           xlim=c(-116,-114)) +
+  geom_point(data=tdf[tdf$Latitude > 27 & 
+                      tdf$Latitude < 28.5 & 
+                      tdf$Longitude > -116 & 
+                      tdf$Longitude < -114,],
+             aes(x=Longitude,y=Latitude,color=Site)) +
+  # temp locations
+  geom_point(data=locationsTemp[locationsTemp$Latitude > 27 & 
+                                locationsTemp$Latitude < 28.5 &
+                                locationsTemp$Longtitude > -116 &
+                                locationsTemp$Longtitude < -114,],
+             aes(x=Longtitude,y=Latitude),color="black") +
+  geom_text_repel(data=locationsTemp[locationsTemp$Latitude > 27 & 
+                                locationsTemp$Latitude < 28.5 &
+                                locationsTemp$Longtitude > -116 &
+                                locationsTemp$Longtitude < -114,],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  color="grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("PP-MP region")
+
+
+# ---
+# Map southern MP and PP region
+map4<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,27),
+           xlim=c(-115,-113)) +
+  geom_point(data=tdf[tdf$Latitude > 26 & 
+                      tdf$Latitude < 27 & 
+                      tdf$Longitude > -115 & 
+                      tdf$Longitude < -113,],
+             aes(x=Longitude,y=Latitude,color=Site)) +
+  # temp locations
+  geom_point(data=locationsTemp[locationsTemp$Latitude > 26 & 
+                                locationsTemp$Latitude < 27 &
+                                locationsTemp$Longtitude > -115 &
+                                locationsTemp$Longtitude < -113,],
+             aes(x=Longtitude,y=Latitude),color="black") +
+  geom_text_repel(data=locationsTemp[locationsTemp$Latitude > 26 & 
+                                locationsTemp$Latitude < 27 &
+                                locationsTemp$Longtitude > -115 &
+                                locationsTemp$Longtitude < -113,],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  color="grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("South of MP-PP")
+
+# ---
+# Map south
+map5<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(min(tdf$Latitude),25),
+           xlim=c(-113,max(tdf$Longitude))) +
+  geom_point(data=tdf[tdf$Latitude > min(tdf$Longitude) & 
+                      tdf$Latitude < 25 & 
+                      tdf$Longitude > -113 & 
+                      tdf$Longitude < max(tdf$Longitude),],
+             aes(x=Longitude,y=Latitude,color=Site)) +
+  # temp locations
+  geom_point(data=locationsTemp[locationsTemp$Latitude > min(tdf$Latitude) & 
+                                locationsTemp$Latitude < 25 &
+                                locationsTemp$Longtitude > -113 &
+                                locationsTemp$Longtitude < max(tdf$Longitude),],
+             aes(x=Longtitude,y=Latitude),color="black") +
+  geom_text_repel(data=locationsTemp[locationsTemp$Latitude > min(tdf$Latitude) & 
+                                locationsTemp$Latitude < 25 &
+                                locationsTemp$Longtitude > -113 &
+                                locationsTemp$Longtitude < max(tdf$Longitude),],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  color="grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Southern region")
+
+
+
+# ---
+# plot vectors for each site
+tdf <- as.data.frame(tdf)
+sitetransects <- unique(tdf$Site)
+psites <- as.list(rep(NA,length=length(sitetransects)))
+
+for(i in 1:length(sitetransects)) {
+  
+  d <- tdf[tdf$Site == sitetransects[i],]
+  minLat <- min(d$Latitude) - 0.2
+  maxLat <- max(d$Latitude) + 0.2
+  minLong <- min(d$Longitude) - 0.2
+  maxLong <- max(d$Longitude) + 0.2
+
+
+  psites[[i]] <- ggplot() +
+  
+    # map of area
+    geom_sf(data=s) +
+    geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+    coord_sf(ylim=c(minLat,maxLat),
+            xlim=c(minLong,maxLong)) +
+  
+    # transect locations
+    geom_point(data=d,
+               aes(x=Longitude,y=Latitude),color="blue") +
+ 
+  # temperature locations
+  # geom_point(data=locationsTemp,
+  geom_point(data=locationsTemp[locationsTemp$Latitude > minLat &
+                                locationsTemp$Latitude < maxLat &
+                                locationsTemp$Longtitude > minLong &
+                                locationsTemp$Longtitude < maxLong,],
+             aes(x=Longtitude,y=Latitude),color="black") +
+  geom_text_repel(data=locationsTemp[locationsTemp$Latitude > minLat &
+                                locationsTemp$Latitude < maxLat &
+                                locationsTemp$Longtitude > minLong &
+                                locationsTemp$Longtitude < maxLong,],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  color="grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle(paste("transect site: ",sitetransects[i])) +
+  theme(plot.title = element_text(color = "blue"))
+
+}
+
+
+
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=6, fig.width=12}
+pcount
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=11}
+map1
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=9}
+map2
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=8}
+map3
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=8}
+map4
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=8}
+map5
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=84, fig.width=12}
+do.call(grid.arrange,c(psites,ncol=2))
+```

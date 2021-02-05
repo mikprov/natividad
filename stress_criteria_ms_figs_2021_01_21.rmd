@@ -1,7 +1,7 @@
 ---
-title: "Abalone stress calculations"
+title: "Stress Critera Manuscript Figures"
 author: "Mikaela Provost, Brock Woodson, Giulio De Leo, Fiorenza Micheli"
-date: "12/09/2020"
+date: "01/21/2021"
 output: html_document
 ---
 
@@ -25,6 +25,8 @@ library(tidyverse)
 library(stats)
 library(sf)
 library(viridis)
+library(patchwork)
+#install.packages("patchwork")
 
 # load functions --> ***** CHECK for MG or MP *****
 source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
@@ -321,57 +323,185 @@ Total stress per site is the integral of the absolute values of daily stress (Fi
 Dowd, W. W., & Denny, M. W. (2020). A series of unfortunate events: characterizing the contingent nature of physiological extremes using long-term environmental records. Proceedings of the Royal Society B, 287(1918), 20192333.
 
 
-### Fig 1a) Daily temperatures 
+### Fig 2) 4 panel figure showing stress criteria demonstration
 
 ```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
-# plot daily temp time series with threshold & climatology
+
+# -----------------------------------------------------------------------------
+# panel 1
+
+
+# ----
+# Dtress
+
+s=14
+d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+ds <- ggplot(data=d) +
+    geom_point(aes(x=Date,y=Dstress)) +
+    geom_line(aes(x=Date,y=Dstress)) +
+    #ggtitle("") +
+    ylab("Degree C") + xlab("") +
+    ylim(-1.28,1.25) +
+    theme_classic() +
+    theme(plot.margin = unit(c(0,0,0,0), "cm")) +
+    geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed') +
+  # add blue text and arrow
+  annotate("text", x=as.Date("2017-10-10"), hjust=0, color="dodgerblue",
+             y=0.9, label=expression(paste(italic("Cooler than expected"))), parse=TRUE) +
+  geom_segment(aes(x = as.Date("2017-10-01"), y = 0.4, xend = as.Date("2017-10-01"), yend = 1),
+               arrow = arrow(length = unit(0.5, "cm"),type="closed"), 
+               color="dodgerblue", lineend = "round", linejoin = "mitre",size=1) +
+  # add orange text and arrow
+  annotate("text", x=as.Date("2017-10-10"), hjust=0, color="orange",
+             y=-0.9, label=expression(paste(italic("Warmer than expected"))), parse=TRUE) +
+  geom_segment(aes(x = as.Date("2017-10-01"), y = -0.4, xend = as.Date("2017-10-01"), yend = -1),
+               arrow = arrow(length = unit(0.5, "cm"),type="closed"), 
+               color="orange", lineend = "round", linejoin = "mitre",size=1)
+ds
+# ---
+# daily T
+
+s = 14
+d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+ts <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature),color="darkgrey") +
+    ylab("Daily Temperature") + xlab("") +
+    #ylim(13,25) +
+    scale_y_continuous(breaks = c(14,16,18,20,22,24)) +
+    theme_classic() +
+    theme(legend.position="none",
+          plot.margin = unit(c(0,0,0,0), "cm"),
+          axis.text.x=element_blank(),
+          axis.title.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          panel.background = element_blank()) +
+    annotate("text",x=as.Date("2017-10-05"),y=24.5,hjust=0,color="black",
+             label="Punta Prieta") 
+
+panel1 <- plot_grid(ts, ds, align = "v", nrow = 2, rel_heights = c(1/3, 2/3))
+panel1
+
+# -----------------------------------------------------------------------------
+# panel 2: degree heating days + threshold
+s = 14
+d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+thres <- ggplot(data=d) +
+  geom_line(aes(x=Date,y=Temperature),color="grey") +
+  geom_line(aes(x=Date,y=climatology),color="black") +
+  ylab("Daily Temperature") + xlab("") +
+  scale_y_continuous(breaks = c(14,16,18,20,22,24)) +
+  theme_classic() +
+  geom_abline(slope=0,intercept = d$threshold[1],color="red",linetype='dashed') 
+  # theme(legend.position="none",
+  #         plot.margin = unit(c(0,0,0,0), "cm"),
+  #         axis.text.x=element_blank(),
+  #         axis.title.x=element_blank(),
+  #         axis.ticks.x=element_blank(),
+  #         panel.background = element_blank()) 
+  
+thres
+s=14
+d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+d$Datesmooth <- seq(as.Date("2017-10-01"), by = "day", length.out = length(d$Date))
+
+
+thresAUC <- ggplot(data=d) +
+  geom_bar(aes(x=Datesmooth,y=degC_above_threshold),stat="identity") +
+  ylab("Deg C above\nthreshold") + xlab("") +
+  scale_y_continuous(breaks=c(0,0.05,0.1,0.15,0.2)) +
+  scale_x_date(#date_breaks = "1 week", 
+               #labels=date_format("%Y-%m-%d"),
+               limits = as.Date(c('2017-10-15','2017-11-30'))) +
+  theme_classic()
+thresAUC
+
+panel2 <- thres + inset_element(thresAUC, left = 0.1, bottom = 0.65, right = 0.6, top = 0.9) + plot_annotation(tag_levels = list(c('C', 'D')))
+panel2
+
+# -----------------------------------------------------------------------------
+# panel 3: combo
+s=14
+d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+d$Datesmooth <- seq(as.Date("2017-10-01"), by = "day", length.out = length(d$Date))
+
+
+combo <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature),color="grey") +
+    geom_line(aes(x=Date,y=climatology_max_mw),color="black") +
+    ylab("Daily Temperature") + xlab("date") +
+    scale_y_continuous(breaks = c(14,16,18,20,22,24)) +
+    theme_classic() +
+    geom_abline(slope=0,intercept = d$threshold[1],color="red",linetype='dashed')
+
+
+comboAUC <- ggplot(data=d) +
+  geom_bar(aes(x=Datesmooth,
+               y=degC_above_threshold_clim_max_mw_minus_Dstress),stat="identity") +
+  ylab("Deg C above\nthreshold") + xlab("") +
+  ylim(0,2.6) +
+  theme_classic() 
+comboAUC
+  
+panel3 <- combo + inset_element(comboAUC, left = 0.14, bottom = 0.65, right = 0.72, top = 1.02) + plot_annotation(tag_levels = list(c('E', 'F')))
+panel3
+
+```
+
+
+All plots for supplemental - needs editing based on panel plots above
+```{r}
+# ---
+# All plots: Dstress & Temp
+# ---
+p <- as.list(rep(NA,length=length(site_vector)))
+names(p) <- site_vector
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_point(aes(x=Date,y=Dstress)) +
+    geom_line(aes(x=Date,y=Dstress)) +
+    #ggtitle("") +
+    ylab("Degree C") + xlab("") +
+    ylim(-1.5,1.5) +
+    theme_classic() +
+    geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed') +
+    annotate("text", x=as.Date("2017-11-05"), hjust=0, color="lightblue",
+             y=1, label=expression(paste(italic("Cooler than expected"))), parse=TRUE) +
+    annotate("text", x=as.Date("2017-11-05"), hjust=0, color="orange",
+             y=-1, label=expression(paste(italic("Warmer than expected"))), parse=TRUE)
+}
+p1 <- p
+rm(p)
+plot_grid(p1[["MorroPrieto"]],p1[["PuntaPrieta"]],nrow=2)
+
+
 
 p <- as.list(rep(NA,length=length(site_vector)))
 names(p) <- site_vector
 for(s in 1:length(site_vector)){
   d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
   p[[s]] <- ggplot(data=d) +
-    geom_line(aes(x=Date,y=Temperature),color="grey") +
-    geom_line(aes(x=Date,y=climatology,color="climatology")) +
-    ggtitle(paste(site_vector[s])) +
+    geom_line(aes(x=Date,y=Temperature),color="darkgrey") +
+    #geom_line(aes(x=Date,y=climatology,color="climatology")) +
+    ggtitle() +
     ylab("Daily Temperature") + xlab("date") +
-    ylim(8,27) +
-    theme_bw() +
-    geom_abline(slope=0,intercept = d$threshold[1],color="darkorange",linetype='dashed') +
+    ylim(13,25) +
+    theme_classic() +
+    annotate("text",x=as.Date("2017-10-05"),y=24,hjust=0,color="black",
+             label=site_vector[s]) +
     theme(legend.position="none")
 }
-plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],labels=c("a)","b)"),nrow=2)
-
-#do.call(grid.arrange,c(p,ncol=2))
-```
-
-### Fig 1b) Daily stress values 
-
-```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
-# plot Dstress ts
-
-p <- as.list(rep(NA,length=length(site_vector)))
-names(p) <- site_vector
-for(s in 1:length(site_vector)){
-  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
-  p[[s]] <- ggplot(data=d) +
-    geom_point(aes(x=Date,y=Dstress,color=degC_above_threshold)) +
-    scale_color_viridis(begin = 0,end = 1) +
-    geom_line(aes(x=Date,y=Dstress,color=degC_above_threshold)) +
-    ggtitle(paste(site_vector[s], " (stress = ",
-                  auc_method1[auc_method1$Site==site_vector[s],]$integral_m1_S,
-                  " deg C day)",sep="")) +
-    ylab("Expected T - Experienced T") + xlab("date") +
-    ylim(-2,2) +
-    theme_bw() +
-    geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed') 
-}
-plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
-
-
-#do.call(grid.arrange,c(p,ncol=2))
+p2 <- p
 rm(p)
+plot_grid(p2[["MorroPrieto"]],p2[["PuntaPrieta"]],labels=c("a)","b)"),nrow=2)
+
+plot_grid(p2[["PuntaPrieta"]],p1[["PuntaPrieta"]],nrow=2)
+
+
+
+#do.call(grid.arrange,c(p,ncol=2))
 ```
+
 
 
 ## Method 2: degree-heating days
@@ -552,5 +682,88 @@ We assume abalone operate under a specific thermal performance curve with a ther
 Barneche, D. R., Kulbicki, M., Floeter, S. R., Friedlander, A. M., Maina, J., & Allen, A. P. (2014). Scaling metabolism from individuals to reef‐fish communities at broad spatial scales. Ecology Letters, 17(9), 1067-1076.
 
 
+
+# Monitoring Data
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+tdf <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/0001_2006_to_2018_All_locations_invert.csv",stringsAsFactors = FALSE)
+tdf <- tdf %>% filter(Species == "fulgens") #just green abalone
+tdf <- tdf[!is.na(tdf$Latitude),]
+tdf <- tdf[!is.na(tdf$Longitude),]
+
+tdf <- tdf %>% add_count(Site,Year,Month) #for each site, in each year-month, count number of transects
+tdf <- tdf %>% group_by(Site,Year,Month) %>%
+  mutate(avgAbundance=mean(TotalAbundance)) %>%
+  mutate(varAbundance=var(TotalAbundance)) %>%
+  mutate(sdAbundance=sd(TotalAbundance))
+
+
+
+# Plot site locations of monitoring data and temp sites.
+
+
+
+
+# get the shapefile
+f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/countries.shp")
+
+# filter tdf to get only sites and lat and long
+locationsTemp <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+names(locationsTemp)[1] <- "Site"
+locationsTemp
+
+map1<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  #geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Short_term_var),size=5) +
+  # temp data
+  geom_point(data=locationsTemp,aes(x=Longtitude,y=Latitude),color="blue") +
+  geom_text_repel(data=locationsTemp,
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "blue",
+                  color="blue",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  # transect data
+  geom_point(data=tdf,aes(x=Longitude,y=Latitude),color="green") +
+  # geom_text_repel(data=tdf,
+  #                 aes(x=Longitude, y=Latitude,label = Site),
+  #                 segment.color = "green",
+  #                 color="green",
+  #                 size = 4,
+  #                 na.rm = TRUE,
+  #                 nudge_x = -0.2,
+  #                 box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Temp site locations")
+
+map1
+
+# ---
+# map just the transect sites
+# reduce tdf to only 
+
+map2<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(min(tdf$Latitude),max(tdf$Latitude)),
+           xlim=c(min(tdf$Longitude),max(tdf$Longitude))) +
+  geom_point(data=tdf,aes(x=Longitude,y=Latitude,color=Site)) +
+  geom_point(data=locationsTemp,aes(x=Longtitude,y=Latitude),color="black") +
+  geom_text_repel(data=locationsTemp[!locationsTemp$Site %in% c("VanDamme","Monterey","LaJolla"),],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  color="grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Site locations")
+map2
+
+```
 
 

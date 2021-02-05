@@ -337,7 +337,7 @@ for(s in 1:length(site_vector)){
     ylab("Daily Temperature") + xlab("date") +
     ylim(8,27) +
     theme_bw() +
-    geom_abline(slope=0,intercept = d$threshold[1],color="darkorange",linetype='dashed') +
+    geom_abline(slope=0,intercept = d$threshold[1],color="black",linetype='dashed') +
     theme(legend.position="none")
 }
 plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],labels=c("a)","b)"),nrow=2)
@@ -352,12 +352,26 @@ plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],labels=c("a)","b)"),nrow=2)
 
 p <- as.list(rep(NA,length=length(site_vector)))
 names(p) <- site_vector
+# for(s in 1:length(site_vector)){
+#   d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+#   p[[s]] <- ggplot(data=d) +
+#     geom_point(aes(x=Date,y=Dstress,color=degC_above_threshold)) +
+#     scale_color_viridis(begin = 0,end = 1) +
+#     geom_line(aes(x=Date,y=Dstress,color=degC_above_threshold)) +
+#     ggtitle(paste(site_vector[s], " (stress = ",
+#                   auc_method1[auc_method1$Site==site_vector[s],]$integral_m1_S,
+#                   " deg C day)",sep="")) +
+#     ylab("Expected T - Experienced T") + xlab("date") +
+#     ylim(-2,2) +
+#     theme_bw() +
+#     geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed') 
+# }
+
 for(s in 1:length(site_vector)){
   d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
   p[[s]] <- ggplot(data=d) +
-    geom_point(aes(x=Date,y=Dstress,color=degC_above_threshold)) +
-    scale_color_viridis(begin = 0,end = 1) +
-    geom_line(aes(x=Date,y=Dstress,color=degC_above_threshold)) +
+    geom_point(aes(x=Date,y=Dstress)) +
+    geom_line(aes(x=Date,y=Dstress)) +
     ggtitle(paste(site_vector[s], " (stress = ",
                   auc_method1[auc_method1$Site==site_vector[s],]$integral_m1_S,
                   " deg C day)",sep="")) +
@@ -366,7 +380,7 @@ for(s in 1:length(site_vector)){
     theme_bw() +
     geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed') 
 }
-plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
+plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],labels=c("a)","b)"),nrow=2)
 
 
 #do.call(grid.arrange,c(p,ncol=2))
@@ -400,9 +414,10 @@ for(s in 1:length(site_vector)){
     ylab("Daily Temperature") + xlab("date") +
     ylim(8,27) +
     theme_bw() +
-    geom_abline(slope=0,intercept = d$threshold[1],color="darkorange",linetype='dashed')
+    geom_abline(slope=0,intercept = d$threshold[1],color="black",linetype='dashed')+
+    theme(legend.position = "none")
 }
-plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
+plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],labels=c("a)","b"),nrow=2)
 
 #do.call(grid.arrange,c(p,ncol=2))
 ```
@@ -456,9 +471,10 @@ for(s in 1:length(site_vector)){
     ylab("Daily Temperature") + xlab("date") +
     ylim(8,27) +
     theme_bw() +
-    geom_abline(slope=0,intercept = d$threshold[1],color="darkorange",linetype='dashed')
+    geom_abline(slope=0,intercept = d$threshold[1],color="black",linetype='dashed')+
+    theme(legend.position = "none")
 }
-plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
+plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],labels=c("a)","b)"),nrow=2)
 
 #do.call(grid.arrange,c(p,ncol=2))
 ```
@@ -499,7 +515,8 @@ plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
 
 ```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=6,fig.height=5}
 
-locations <- read.csv("C:/Users/Mikaela/Documents/GitHub/natividad/data/Sensor_Locations_map.csv")
+locations <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+
 names(locations)[1] <- "Site"
 locations <- left_join(locations,auc_method1,by='Site')
 locations <- left_join(locations,auc_method2,by='Site')
