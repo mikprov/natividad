@@ -1,0 +1,605 @@
+---
+title: "4 stress methods at fedecoop sites"
+author: "Mikaela Provost, Brock Woodson, Giulio De Leo, Fiorenza Micheli"
+date: "02/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+library(pracma)
+library(viridis)
+library(lemon)
+library(lubridate)
+library(zoo)
+library(tidyverse)
+library(stats)
+library(sf)
+library(viridis)
+
+# load functions --> ***** CHECK for MG or MP *****
+source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in bottom data -- #
+
+d <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomall <- d %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% 
+  select(Site,Temperature,Date)# randomly select temp per day
+bottomall <- bottomall %>% mutate(year = year(Date)) %>% mutate(month=month(Date))
+#names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d)
+site_vector <- unique(bottomall$Site)
+
+
+# testing --------
+# n_occur <- data.frame(table(bottomall[bottomall$Site==site_vector[9],]$Date))
+# n_occur[n_occur$Freq >1,]
+
+# check number of weeks I have for each site
+# and check if the week numbers throughout the year also match
+# (I want to look at stress for comparible weeks)
+#head(bottomall)
+#table(bottomall$Site,bottomall$month)
+# in general: sites cover almost the same time range
+
+```
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -------------------------------------------
+# Data frame to store stress values per site per method
+# -------------------------------------------
+
+site_stress_values <- data.frame(
+  Site = site_vector,
+    # values for method 1: variability
+  integral_m1 = rep(NA,length=length(site_vector)),
+  integral__m1_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m1 = rep(NA,length=length(site_vector)),
+    # values for method 2: thresholds
+  integral_m2 = rep(NA,length=length(site_vector)),
+  integral__m2_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m2 = rep(NA,length=length(site_vector)),
+    # values for method 3: combo
+  integral_m3 = rep(NA,length=length(site_vector)),
+  integral__m3_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m3 = rep(NA,length=length(site_vector)),
+    # values for method 4: curve
+  integral__m4_S = rep(NA,length=length(site_vector)))
+
+
+# -------------------------------------------
+# Method 1: short-term variability, integrate short-term variability curve 
+# -------------------------------------------
+# moving window to calculate expected T
+wts <- c(0.1,0.2,0.4,0.8)
+wts <- wts/sum(wts) #make sure weights add up to 1
+wtsp <- round(wts*100,digits=0)
+
+stress_list <- as.list(rep(NA,length=length(site_vector)))
+names(stress_list) <- site_vector
+
+for(s in 1:length(site_vector)){
+  
+  stress <- calc_stress(d=bottomall[bottomall$Site==site_vector[s],],
+                                weights=wtsp)  
+  stress$Dstress[is.na(stress$Dstress)] <- 0
+  stress$expectedT[is.na(stress$expectedT)] <- 0
+  stress_list[[s]] <- stress
+  
+  # integrate under short term variability stress curve
+  yy <- abs(stress[stress$Site==site_vector[s],]$Dstress)
+  yy <- yy[!is.na(yy)]
+  xx <- seq(from=1,to=length(yy),by=1)
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m1 <- trapz(x=xx,y=yy)
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m1 <- length(xx)
+  rm(yy,xx,stress)
+}
+bottomall_stress <- do.call("rbind",stress_list)
+bottomall_stress$stress1_pos_vals <- abs(bottomall_stress$Dstress)
+rm(stress_list,wts,wtsp,s)
+
+
+# -------------------------------------------
+# Method 2: integrate temperature curve for when temp is >site-specific threshold
+# -------------------------------------------
+
+# a) find site-specific threshold (1 stdev + mean)
+site_thresholds <- data.frame(
+  Site = site_vector,
+  threshold = rep(NA,length=length(site_vector)),
+  site_mean = rep(NA,length=length(site_vector)),
+  site_sd = rep(NA,length=length(site_vector)))
+
+for(s in 1:length(site_vector)){
+  # fill in mean temp for each site
+  site_thresholds[site_thresholds$Site==site_vector[s],]$site_mean <- 
+    mean(bottomall[bottomall$Site==site_vector[s],]$Temperature)
+  # fill in standard deviation for each site
+  site_thresholds[site_thresholds$Site==site_vector[s],]$site_sd <- 
+    sd(bottomall[bottomall$Site==site_vector[s],]$Temperature)
+  # set new threshold (mean + sd)
+  site_thresholds[site_thresholds$Site==site_vector[s],]$threshold <-
+    site_thresholds[site_thresholds$Site==site_vector[s],]$site_mean + 
+    site_thresholds[site_thresholds$Site==site_vector[s],]$site_sd}
+
+bottomall_stress <- left_join(bottomall_stress,site_thresholds)
+
+
+# b) get climatology for each site
+# use loess() and set span=1.5 months
+# span = 90 / number of days in ts = fraction of time series that is 1.5 months
+bottomall_stress$climatology <- rep(NA,length=length(bottomall_stress$Site))
+for(s in 1:length(site_vector)){
+  df <- bottomall_stress[bottomall_stress$Site==site_vector[s],]
+  df$index <- seq(from=1,to=length(df$Site),by=1)
+  test <- loess(Temperature~index,data=df,span=(90/length(df$index)))
+  bottomall_stress[bottomall_stress$Site==site_vector[s],]$climatology <- test$fitted}
+rm(df,test,s)
+
+# c) climatology - threshold = temps above threshold (units: deg C)
+bottomall_stress$stress2_clim_minus_thres <- bottomall_stress$climatology - bottomall_stress$threshold
+
+bottomall_stress$stress2_degC_above_threshold <- ifelse(bottomall_stress$stress2_clim_minus_thres < 0,0,bottomall_stress$stress2_clim_minus_thres) #any negative temps (below threshold), convert to 0
+
+# d) integrate the temps above threshold (units: deg C*day)
+for(s in 1:length(site_vector)){ #for each site
+  d <- bottomall_stress[bottomall_stress$Site==site_vector[s],]
+  xx <- seq(from=1,to=length(d$Temperature),by=1)
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m2 <-
+    trapz(x=xx,y=d$stress2_degC_above_threshold) #integrate under absolute
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m2 <-
+    length(d$stress2_degC_above_threshold[!is.na(d$stress2_degC_above_threshold)])
+}
+rm(s,d,xx)
+
+# -------------------------------------------
+# Method 3: climatology of potential max temp - short term variability (cooling off effect)
+# -------------------------------------------
+
+# A) get two types of climatology 
+
+#bottomall_stress$climatology_max <- rep(NA,length=length(bottomall_stress$Site))
+bottomall_stress$stress3_climatology_max_mw <- rep(NA,length=length(bottomall_stress$Site))
+window_clim = 15
+
+for(s in 1:length(site_vector)){
+  # subest to a site
+  df <- bottomall_stress[bottomall_stress$Site==site_vector[s],]
+  df <- df %>% select(Site,Date,Temperature,climatology) 
+  df$index <- seq(from=1,to=length(df$Site),by=1)
+  
+  # ----------------------------------------------
+  # block potential climatology using all values >mean clim for now, 
+  # might return if I need it
+  # ----------------------------------------------
+  # 1) climatology using values above mean climatolgoy
+  # df$temp_above_clim <- rep(NA,length=length(df$Site))
+  # # pull out values greater than climatology (mean temp)
+  # df$temp_above_clim <- ifelse(df$Temperature > df$climatology,df$Temperature,NA)
+  # addrows <- data.frame(matrix(data=rep(NA,length=ncol(df)),nrow=1,ncol=ncol(df)))
+  # names(addrows) <- names(df)
+  # addrows$temp_above_clim <- mean(df$temp_above_clim,na.rm=TRUE)
+  # addrows$index <- max(df$index) + 1
+  # df1 <- rbind(df,addrows)
+  # tempday <- loess(temp_above_clim~index,data=df1,span=(90/length(df1$index)))
+  # test <- predict(tempday,newdata=df1$index)
+  # bottomall_stress[bottomall_stress$Site==site_vector[s],]$climatology_max <- test[1:nrow(df)]
+  # rm(addrows,tempday,test,df1)
+  
+  # 2) in moving window (window_clim)
+  df <- bottomall_stress[bottomall_stress$Site==site_vector[s],]
+  df <- df %>% select(Site,Temperature)
+  df$index <- seq(from=1,to=length(df$Site),by=1)
+  df$temp_mw_maxT <- rep(NA,length=length(df$index))
+  # add rows to df for moving window max
+  addrows <- data.frame(matrix(data=rep(0,length=ncol(df)),
+                       nrow=window_clim,ncol=length(rep(0,length=ncol(df))),
+                       byrow=TRUE))
+  names(addrows) <- names(df)
+  addrows$Site <- rep(site_vector[s],length=length(addrows$Site))
+  df1 <- bind_rows(df,addrows)
+  # loop over extended df (df1)
+  for(i in 1:(length(df1$index)-window_clim)){ 
+    # subset temp data to window
+    tsub <- df1[i:(i+window_clim-1),]
+    df1$temp_mw_maxT[i] <- max(tsub$Temperature)  }
+  
+  # fill in max temp in moving window col in df
+  df$temp_mw_maxT <- df1$temp_mw_maxT[1:nrow(df)]
+  
+  # loess using moving window max vals
+  tempday1 <- loess(temp_mw_maxT~index,data=df,span=(90/length(df$index)))
+  test1 <- predict(tempday1,newdata=df$index)
+  bottomall_stress[bottomall_stress$Site==site_vector[s],]$stress3_climatology_max_mw <- test1
+  rm(df1,df,addrows,tempday1,test1)
+}
+rm(tsub,s,i)
+
+
+# B) difference between climatology_max_mw & threshol
+bottomall_stress$stress3_clim_minus_thres_max_mw <- 
+  bottomall_stress$stress3_climatology_max_mw - bottomall_stress$threshold
+
+# C) replace negative values with 0
+bottomall_stress$stress3_degC_above_thres_clim_max_mw <- 
+  ifelse(bottomall_stress$stress3_clim_minus_thres_max_mw < 0,0,bottomall_stress$stress3_clim_minus_thres_max_mw) 
+
+# D) integrate the climatology_max_mw above threshold (units: deg C*day)
+for(s in 1:length(site_vector)){ #for each site
+  d <- bottomall_stress[bottomall_stress$Site==site_vector[s],]
+  xx <- seq(from=1,
+            to=length(d$stress3_degC_above_thres_clim_max_mw[!is.na(d$stress3_degC_above_thres_clim_max_mw)]),
+            by=1)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m3 <-
+    trapz(x=xx,y=d$stress3_degC_above_thres_clim_max_mw[!is.na(d$stress3_degC_above_thres_clim_max_mw)])
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m3 <-
+    length(d$stress3_degC_above_thres_clim_max[!is.na(d$stress3_degC_above_thres_clim_max)])} 
+
+# G) fill in max clim minus short term var column in auc df
+hold <- site_stress_values$integral_m3 / site_stress_values$days_in_ts_m3
+
+
+site_stress_values$integral__m1_S <- site_stress_values$integral_m1 / site_stress_values$days_in_ts_m1 # standard m1 so I can substract it for m3
+
+
+site_stress_values$integral__m3_S <- 
+  hold - site_stress_values$integral__m1_S
+
+rm(hold)
+
+# # H) add col to bottom_stress: max clim above threshold - short-term var stress values
+# bottomall_stress$degC_above_threshold_clim_max_mw_minus_Dstress <-
+#   bottomall_stress$stress3_degC_above_threshold_clim_max_mw - abs(bottomall_stress$Dstress)
+
+
+# -------------------------------------------
+# divide integrals by number of days (standardize!)
+
+site_stress_values$integral__m2_S <- site_stress_values$integral_m2 / site_stress_values$days_in_ts_m2
+
+
+# -------------------------------------------
+# Method 4: thermal performance curve
+# -------------------------------------------
+
+# define params
+alpha=0.75
+E_r=0.65
+E_i=2.035
+k=8.62e-5
+Tmax=25
+
+TT=seq(from=0,to=50,by=.01)
+
+Topt_sites <- data.frame(
+  Site = site_vector,
+  Topt = rep(NA,length=length(site_vector)))
+for(s in 1:length(site_vector)){
+  Topt_sites[Topt_sites$Site == site_vector[s],]$Topt <-
+    mean(bottomall_stress[bottomall_stress$Site==site_vector[s],]$Temperature,rm.na=TRUE)}
+
+TK=TT+273
+
+Topt_sites$ToptK <- Topt_sites$Topt + 273
+
+Topt_sites$scf1 <- 10^(-.03*(Tmax-Topt_sites$Topt)+.28)
+
+Topt_sites$E_if1 <- E_i*exp(Topt_sites$scf1)
+
+M=1
+
+curves <- as.list(rep(NA,length=length(site_vector)))
+names(curves) <- site_vector
+
+for(s in 1:length(curves)){
+  
+  P01 <- exp(-E_r/(k*TK))*(1+(E_r/(Topt_sites[Topt_sites$Site==site_vector[s],]$E_if1-E_r)*exp(Topt_sites[Topt_sites$Site==site_vector[s],]$E_if1*(1/(k*(Topt_sites[Topt_sites$Site==site_vector[s],]$ToptK))-1/(k*TK)))))^-1
+  
+  P1 <- P01*M^alpha
+  
+  P1=1-P1/max(P1)
+  
+  curves[[s]] <- data.frame(Site=rep(site_vector[s],length(P01)),perf=P01,stress=P1)
+}
+rm(P01,P1,s)
+
+# -----------------------------------------------------------
+# stress time series using the inverted thermal performance curve
+
+Topt_sites$stress_degday <- rep(NA,length(Topt_sites[,1]))
+stress4_timeseries <- as.list(rep(NA,length=length(site_vector)))
+names(stress4_timeseries) <- site_vector
+
+for(s in 1:length(site_vector)){
+  T1 <- bottomall_stress[bottomall_stress$Site==site_vector[s],]$Temperature
+
+  P0=exp(-E_r/(k*(T1+273)))*(1+(E_r/(Topt_sites[Topt_sites$Site==site_vector[s],]$E_if1-E_r)*exp(Topt_sites[Topt_sites$Site==site_vector[s],]$E_if1*(1/(k*(Topt_sites[Topt_sites$Site==site_vector[s],]$Topt+273))-1/(k*(T1+273))))))^-1
+
+  stress1=1-P0/max(P0)
+  stress1=abs(stress1*(T1 - Topt_sites[Topt_sites$Site==site_vector[s],]$Topt) )
+  
+  savestress <- data.frame(
+    Date = bottomall_stress[bottomall_stress$Site==site_vector[s],]$Date,
+    stress4 = stress1)
+  
+  stress4_timeseries[[site_vector[s]]] <- savestress
+
+  ts1=trapz(seq(from=1,to=length(stress1),by=1),stress1)
+  site_stress_values[site_stress_values$Site==site_vector[s],]$integral__m4_S <- ts1/length(stress1)
+}
+rm(s,T1,P0,ts1,stress1)
+
+rm(M,alpha,E_r,E_i,k,TK,Tmax,TT)
+
+
+```
+
+## Method 1: short-term variability 
+
+This method assumes that organisms experience thermal stress when the temperature they experience differs from the temperature they are acclimatized to. Abalone experience more stress when there is a greater difference between experienced and expected temperature on each day. Using a moving window of 4 days, we fit a linear regression using daily temperature and use this to estimate the 'acclimatized' temperature for each day. Daily stress is the difference between the acclimatizated and expereinced temperature.
+
+In the time series plots below, color represents temperature abalone experienced above the site-specific thermal threshold (site-specific thermal limits are explained below). Units on the color bars is deg C.
+
+We use these daily stress measures to get a total stress for each site. Total stress per site is the integral of the absolute values. Because there were slight differences in the length of temperature time series among sites, we standardize each integral value by dividing it by the number of days at each site. The units of the standardized integral values are (deg C*day)/day --> deg C (?). These values are plotted in Map 1.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=11,fig.height=35}
+
+p <- as.list(rep(NA,length=length(site_vector)))
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_point(aes(x=Date,y=stress1_pos_vals)) +
+    #scale_color_viridis(begin = 0,end = 1) +
+    geom_line(aes(x=Date,y=stress1_pos_vals)) +
+    ggtitle(paste(site_vector[s]," - ",
+                  site_stress_values[site_stress_values$Site==site_vector[s],]$integral__m1_S,
+                  "deg C day")) +
+    ylab("abs(Expected T - Experienced T)") + xlab("date") +
+    ylim(0,max(bottomall_stress$stress1_pos_vals)) +
+    theme_bw() +
+    geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed')
+}
+
+do.call(grid.arrange,c(p,ncol=2))
+rm(p)
+```
+
+
+## Method 2: cumulative temperature above thermal limit
+
+Method 2 assumes that stress accumulates when abalone experience temperatures above an upper thermal limit. We assume there is some local adaptation among sites such that extreme temperatures experienced at one site may not be considered extreme, and therefore stressful, at another site. We define site-specific upper thermal limits as one standard deviation above the long-term mean of temperatures observed at that site.
+
+Instead of using daily temperature, we use each site's climatology to examine stress experienced above the upper thermal limit. Climatology is calculated using the loess function in R with a 90 day smoothing window. In the time series plots below, daily temperture (blue line), climatology (red line), and upper thermal limit (orange dashed line) are plotted for each site. This method assumes that abalone experience when the red line (climatology) is above the orange dashed line (upper thermal limit).
+
+Total stress at each site is the integral of temperatures greater than the site-specific thermal limit (deg C * day). Just as in method 1, we then standaridze the integrals by the number of days per site. Units of standardized integral values are (deg C * day)/day. These values are plotted in Map 2.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=11,fig.height=35}
+
+p <- as.list(rep(NA,length=length(site_vector)))
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature)) +
+    geom_line(aes(x=Date,y=climatology,color="climatology")) +
+    ggtitle(paste(site_vector[s]," - ",
+                  site_stress_values[site_stress_values$Site==site_vector[s],]$integral__m2_S,
+                  "deg C day"))  +
+    ylab("Daily Temperature") + xlab("date") +
+    ylim(8,27) +
+    theme_bw() +
+    geom_abline(slope=0,intercept = d$threshold[1],color="orange",linetype='dashed')
+}
+do.call(grid.arrange,c(p,ncol=2))
+rm(p)
+```
+
+
+## Method 3: climatology of potential max - short-term variability
+
+The goal of this method is to combine stress of thermal limits and stress associated with short-terma variability. Short-term variability can be considered 'good' if temperatures are high, the variation temperature has a cooling off effect. But there is still some stress associated with rapidly changing temps. 
+
+* In this menthod we calculate the potential maximum climatology. Then, we integrate the maximum climatology values that cross the site-specific thermal threshold. And standardize them to the number of days in temperature time series.
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=11,fig.height=35}
+
+p <- as.list(rep(NA,length=length(site_vector)))
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature)) +
+    geom_line(aes(x=Date,y=stress3_climatology_max_mw,color="max climatology\n")) +
+    ggtitle(paste(site_vector[s]," - ",
+                  site_stress_values[site_stress_values$Site==site_vector[s],]$integral__m3_S,
+                  "deg C day"))  +
+    ylab("Daily Temperature") + xlab("date") +
+    ylim(8,27) +
+    theme_bw() +
+    geom_abline(slope=0,intercept = d$threshold[1],color="orange",linetype='dashed')
+}
+do.call(grid.arrange,c(p,ncol=2))
+rm(p)
+```
+
+## Method 4: Thermal Performance Curve
+
+### Thermal performance curves at each site:
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=11,fig.height=35}
+p <- as.list(rep(NA,length=length(site_vector)))
+for(s in 1:length(site_vector)){
+  d <- curves[[site_vector[s]]]
+  d$index <- seq(from=1,to=length(d$Site),by=1)
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=index,y=stress)) +
+    ggtitle(paste(site_vector[s])) +
+    ylab("stress") + xlab("index") +
+    ylim(0,1) +
+    theme_bw() 
+}
+do.call(grid.arrange,c(p,ncol=2))
+rm(p)
+```
+
+### Time series of stress values:
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=11,fig.height=35}
+p <- as.list(rep(NA,length=length(site_vector)))
+hold <- bind_rows(stress4_timeseries,.id=)
+for(s in 1:length(site_vector)){
+  d <- stress4_timeseries[[site_vector[s]]]
+  
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=stress4)) +
+    ggtitle(paste(site_vector[s]," - ",
+                  site_stress_values[site_stress_values$Site==site_vector[s],]$integral__m4_S,
+                  "deg C day"))  +
+    ylab("stress") + xlab("") +
+    ylim(c(0,max(hold$stress4))) +
+    theme_bw() 
+}
+do.call(grid.arrange,c(p,ncol=2))
+rm(p,hold)
+```
+
+
+## Maps
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# get the shapefile
+f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/countries.shp")
+
+
+locations <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+                       
+names(locations)[1] <- "Site"
+locations <- left_join(locations,site_stress_values,by='Site')
+
+# rename columns to make sense of maps
+colnames(locations)[colnames(locations) == "integral__m1_S"] <- "Short_term_var"
+colnames(locations)[colnames(locations) == "integral__m2_S"] <- "Clim_thermal_limit"
+colnames(locations)[colnames(locations) == "integral__m3_S"] <- "Threshold_minus_Variability"
+colnames(locations)[colnames(locations) == "integral__m4_S"] <- "Thermal_Performance_Curve"
+
+
+p1<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Short_term_var),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Short_term_var),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 1: short-term variability")
+
+p2<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Clim_thermal_limit),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Clim_thermal_limit),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 2: thermal limits")
+  
+
+p3 <-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Threshold_minus_Variability),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Threshold_minus_Variability),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 3: (Threshold) - (Short-term variability)")
+
+
+p4 <-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Thermal_Performance_Curve),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Thermal_Performance_Curve),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 4: Thermal Performance Curve")
+
+
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=9, fig.height=35}
+plot_grid(p1,p2,p3,p4,nrow=4)
+
+```
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+loc1 <- locations
+loc1$Site <- factor(loc1$Site,levels=loc1[order(loc1$Latitude),]$Site)
+locations_1 <- loc1 %>% 
+  select(Site,Latitude,Longtitude,Short_term_var,Clim_thermal_limit,Threshold_minus_Variability, Thermal_Performance_Curve) %>%
+  gather('method','value',4:7)
+
+locations_1$method <- factor(locations_1$method, levels = c("Short_term_var", "Clim_thermal_limit", "Threshold_minus_Variability","Thermal_Performance_Curve"))
+
+p5 <- ggplot(data=locations_1,aes(x=Site,y=value,fill=method)) +
+  geom_bar(stat="identity",position = "dodge") +
+  scale_fill_brewer(type="qual") +
+  xlab("Sites - in order by Latitude") +
+  ylab("Stress - (deg C * day)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust =1,hjust=0.9)) +
+  ggtitle("")
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=12}
+p5
+```

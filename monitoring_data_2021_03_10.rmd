@@ -1,0 +1,162 @@
+---
+title: "Monitoring Data"
+author: "Mikaela M. Provost"
+date: "3/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+
+md <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/0001_2006_to_2018_All_locations_invert.csv",stringsAsFactors = FALSE)
+
+meta <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/0000_2006_to_2018_All_locations_invert_transect_metadata.csv",stringsAsFactors = FALSE)
+head(meta)
+
+st <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/2007_2018_size_frequency_untabled_search_time.csv",stringsAsFactors = FALSE)
+st <- st[st$Genusspecies == "Haliotis fulgens",]
+
+
+```
+
+
+
+### Which sites to use in stress analysis?
+
+1. All the 'reserve' sites in El Rosario:
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+table(md[md$Community %in% c('El_Rosario') & md$Zone == 'Reserve',]$Year,
+      md[md$Community %in% c('El_Rosario') & md$Zone == 'Reserve',]$Site)
+
+```
+
+2. And 'reserve' sites in Isla Natividad:
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+table(md[md$Community %in% c('Isla_Natividad') & md$Zone == 'Reserve',]$Year,
+      md[md$Community %in% c('Isla_Natividad') & md$Zone == 'Reserve',]$Site)
+```
+
+From our meeting on Jan 28, 2021, should I also include these sites from Isla Natividad: Dulce and Guanera?
+
+### Abalone species in the monitoring data:
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+data.frame( 
+  
+  Genus = rep('Haliotis',length=length(unique(md[md$Community %in% c('Isla_Natividad','El_Rosario') & md$Zone == 'Reserve' & md$Genus=='Haliotis',]$Species))),
+  
+  Species = unique(md[md$Community %in% c('Isla_Natividad','El_Rosario') & md$Zone == 'Reserve' & md$Genus=='Haliotis',]$Species)
+  )
+```
+
+
+Which years do abalone species show up in monitoring data? 
+
+* Note: there are a lot of transects not included in 2016-2018 because transects with no species observed (zeros) were not recorded in these years. 
+
+* For *H. assimilis*, transects for these species first started in 2013. Is this because *H. assimilis* was not searched for in transects before 2013? In the data, some of these transects in the monitoring data have zeros. 
+
+* For *H. kamtschatkana*, transects started in 2016. All 3 transects (there are 4 transects total in the monitoring data, but one of them was at Pietra_Vidal (fished site in El Rosario). 
+
+* The other species (*H. corrugata*,*H. cracherodii*,*H. fulgens*,*H. rufescens*,*H. sorenseni*) have transects recorded in all years between 2006-2016. 
+
+* But only *H. corrugata*, *H. fulgens*, and *H. sorenseni* have transects 2006-2018.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+table(md$Year,md$Species)
+```
+
+I assume: in 2016-2018 any abalone species missing from monitoring data was actually searched for in all transects at the sites of interest (sites I'm focused on: reserve sites in Isla Natividad and El Rosario) but no abalone were observed. Here, I'm focusing on green abalone.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# sum green abalone in transects for each site-year
+mdf <- md %>% filter(Community %in% c('Isla_Natividad','El_Rosario'),
+              Zone == 'Reserve',
+              Species == 'fulgens')
+mdf <- mdf %>% group_by(Year, Site) %>% summarise(sum.per.site=sum(TotalAbundance))
+mdf$density <- rep(NA,length(mdf[,1]))
+mdf$numtransects <- rep(NA,length(mdf[,1]))
+
+for(i in 1:length(mdf$Year)){ # for each row in the data frame
+  a <- mdf[i,] # subset to one site-year
+  mdf[i,]$density <- a$sum.per.site / meta[meta$Site== a$Site & meta$Year== a$Year,]$totalTransect_site_yr # calc the density using total abundance / num of transects
+  mdf[i,]$numtransects <- meta[meta$Site== a$Site & meta$Year== a$Year,]$totalTransect_site_yr
+  rm(a)
+} # note: density is not an average in this calculation
+
+source("generate_stress_values.r") #need site_stress_values
+
+```
+
+### Fig 1. Density of green abalone at reserve sites
+
+Density = (total abalone observed in year) / number of transects done that year)
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height= 15, fig.width=6}
+
+# plot density vs year for each site
+fulsites <- unique(mdf$Site)
+p <- as.list(rep(NA,length(fulsites)))
+for(i in 1:length(fulsites)){
+  p[[i]] <- ggplot(mdf[mdf$Site == fulsites[i],],aes(x=Year,y=density)) + 
+    geom_point() + geom_line() + theme_classic() +
+    ylab("H. fulgens (#/transect)") +
+    ylim(c(0,max(mdf$density))) +
+    ggtitle(paste(mdf[mdf$Site == fulsites[i],]$Site," ","tot.trans=",sum(mdf[mdf$Site == fulsites[i],]$numtransects)))
+}
+do.call(grid.arrange,c(p,ncol=2))
+
+
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# relative density at each plot over time plots
+mdf$relativedensity <- rep(NA,length=length(mdf[,1]))
+
+for(s in 1:length(fulsites)){ # step through sites
+  years <- mdf[mdf$Site==fulsites[s],]$Year # years sampled at site
+  years <- sort(years,decreasing=TRUE)
+  
+  for(y in 1:length(years)){ # for each year
+    mdf[mdf$Site==fulsites[s] & mdf$Year==years[y],]$relativedensity <-
+      mdf[mdf$Site==fulsites[s] & mdf$Year==years[y],]$density / mdf[mdf$Site==fulsites[s] & mdf$Year==years[1],]$density # divide the density by the density in most recent year
+  }
+  rm(years)
+}
+
+p <- as.list(rep(NA,length(fulsites)))
+for(i in 1:length(fulsites)){
+  p[[i]] <- ggplot(mdf[mdf$Site == fulsites[i],],aes(x=Year,y=relativedensity)) + 
+    geom_point() + geom_line() + theme_classic() +
+    ylab("H. fulgens (relative density)") +
+    ylim(c(0,max(mdf$density))) +
+    ggtitle(paste(mdf[mdf$Site == fulsites[i],]$Site))
+}
+do.call(grid.arrange,c(p,ncol=2))
+
+
+```
+
+### Timed Search Data
+
+Sites with timed search data:
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+table(st$Site, st$Year)
+```
+
+Size bins recorded in timed search data:
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+summary(st$DiameterCorrected)
+hist(st$DiameterCorrected,xlab="Diameter corrected (cm)",main="Size distribution of\ngreen abalone in timed search data\n(2006-2018) ")
+```

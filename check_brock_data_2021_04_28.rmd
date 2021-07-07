@@ -1,0 +1,820 @@
+---
+title: "SST to Simulated Bottom Temp"
+author: "Mikaela M. Provost"
+date: "05/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+library(pracma)
+library(viridis)
+library(lemon)
+library(lubridate)
+library(zoo)
+library(tidyverse)
+library(stats)
+library(sf)
+
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# --------------------------------------
+# Use Brock's climatology for regression
+# --------------------------------------
+# -- Read in data -- #
+file_names <- list.files(path = "C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/sstfedecoop1",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/sstfedecoop1/",
+                file_names[f],"_temp.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$Date <- as.Date(SSTfede$Date,format="%m/%d/%Y") #date problems
+SSTfede <- SSTfede %>% mutate(year = year(Date))
+#write.csv(SSTfede,file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/forBrock_high_freq_var/SSTfede.csv")
+
+SSTfede$temp_sst_raw <- rep(NA,length=length(SSTfede[,1]))
+SSTfede$temp_sst_raw <- ifelse(SSTfede$flag < 1, SSTfede$Temperature, "NA")
+SSTfede$temp_sst_raw <- as.numeric(as.character(SSTfede$temp_sst_raw))
+
+rm(filesL,file_names,f) # clean up
+
+site_vector <- unique(SSTfede$Site) # use in for loops
+years <- unique(SSTfede$year) # use in for loops
+
+
+# ---
+# calc high freq variance in SST  
+# ---
+
+# deviations of raw SST temp from climatology:
+SSTfede$dev_10 <- SSTfede$Climatology - SSTfede$temp_sst_raw 
+# empty df to store average yearly high freq variance per site (averaged variances over years)
+variance_reg <- data.frame(
+  Site = site_vector,
+  variance_SST = rep(NA,length=length(site_vector)))
+
+for(s in 1:length(site_vector)){ #for each site
+  var_years <- rep(NA,length(years)) # create empty vector for variance in each year
+  
+  for(y in 1:length(years)){ #step through each year
+    var_years[y] <- # calculate variance for that year-site using the raw temp deviations
+    var(SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[y], ]$dev_10,na.rm=TRUE)
+  }
+  variance_reg[variance_reg$Site==site_vector[s],]$variance_SST <- 
+    mean(var_years) # average variances across years per site
+}
+rm(y,s,var_years)
+
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# =============================================
+# Process bottom data to get high freq variance:
+# =============================================
+
+# ---------------------------------------------------------------
+# a) Calculate high freq variance in bottom (reduce 10 min data to daily obs)
+# ---------------------------------------------------------------
+
+# read in data - bottom fedecoop
+d <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+colnames(d)[colnames(d) == "UTC_DateTime"] <- "UTC_Date_Time"
+bottomfede <- d %>% dplyr::select(Site,Temperature,Date,UTC_Date_Time)
+
+# read in data - bottom mm & mp
+d1 <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$Date,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  dplyr::select(Site,Temperature,Date,UTC_Date_Time)
+# combine mp & mm sites with all the others
+bottomall <- rbind(bottomfede,bottommppp)
+colnames(bottomall)[colnames(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+#table(bottomall$Site)
+#bottomall <- as.data.frame(bottomall)
+#write.csv(bottomall,file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/forBrock_high_freq_var/bottomall.csv")
+
+# keep only one temp observation per day (miniDOT collects temp every 10 min)
+#bottomall <- bottomall %>% group_by(Site,Date) %>% sample_n(1)
+
+
+# ----------
+# -- spectrums -- #
+# ----------
+sampleinterval = 10/(10*6*24) #units is days, 10*6=min in hr, *24=min in day
+
+site_vector <- unique(bottomall$Site)
+
+pBR <- as.list(rep(NA,length=length(site_vector)))
+pBRlog <- as.list(rep(NA,length=length(site_vector)))
+regressiondf <- data.frame(
+  Site = site_vector,
+  highvar_bottom = rep(NA,length=length(site_vector)))
+
+for(s in 1:length(site_vector)){ #for each site
+  
+  # subset to site
+  d <- bottomall[bottomall$Site == site_vector[s],]
+  
+  # bottom spectrum 
+  spR <- spec.pgram(d$temp_bottom,spans=c(10,10),taper=0.1,plot = FALSE,detrend = TRUE)
+  
+  spRdf <- data.frame(
+    freq = spR$freq/sampleinterval,
+    freq1 = spR$freq,
+    spec = spR$spec*(spR$freq/sampleinterval),
+    spec1 = spR$spec)
+  
+  # store plots
+  pBRlog[[s]] <- ggplot(data=spRdf,aes(x=log10(freq),y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("log10(freq (1/day))") + ylab("log10(spec*freq)") +
+    theme(legend.position="none") 
+  
+  pBR[[s]] <- ggplot(data=spRdf[spRdf$freq < 10,],aes(x=freq,y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("freq (1/day)") + ylab("log10(spec*freq)") +
+    theme(legend.position="none") 
+  
+  # regressiondf[regressiondf$Site == site_vector[s],]$highvar_bottom <-
+  #   trapz(x=spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25 ,]$freq1,
+  #         y=spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25 ,]$spec1 * 2)
+  
+  regressiondf[regressiondf$Site == site_vector[s],]$highvar_bottom <-
+    trapz(x=spRdf[spRdf$freq > 0.1 ,]$freq1,
+          y=spRdf[spRdf$freq > 0.1 ,]$spec1 * 2)
+  
+    #sum(spRdf[spRdf$freq > 0.75 & spRdf$freq < 2.25,]$spec1 * min(spRdf$freq)) 
+}
+rm(spRdf,d,s,spR,site_vector)
+
+
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# Plot regression
+variance_yrly_avg <- variance_reg
+regdf <- left_join(regressiondf,variance_yrly_avg)
+sitekey <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+colnames(sitekey)[colnames(sitekey)=="bsites"] <- "Site"
+sitekey$Ssites <- NULL
+#write.csv(sitekey,file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/forBrock_high_freq_var/sitekey.csv")
+regdf <- left_join(regdf,sitekey,by="Site")
+
+
+# classify each site as 1 = strong upwelling, 0 = week upwelling
+# I eye-checked each site on a map
+# try sf package
+m <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/MEX.shp")
+f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/countries.shp")
+
+locations <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+names(locations)[1] <- "Site"
+
+# ---
+# Classify each location as strong or weak upwelling
+# ---
+sites <- locations$Site
+
+data_zoom <- locations[locations$Site==sites[18],]
+
+# zoomed - in
+ggplot() +
+  #geom_sf(data=m) + #coastline layer
+  geom_sf(data=s) + #coastline layer
+  geom_point(data=data_zoom,
+             aes(x=Longtitude,y=Latitude)) +
+  coord_sf(ylim=c((data_zoom$Latitude-0.5),(data_zoom$Latitude+0.5)), 
+           xlim=c((data_zoom$Longtitude-0.5),(data_zoom$Longtitude+0.5))) +
+  geom_text_repel(data=data_zoom,
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) 
+# zoomed - out
+ggplot() +
+  geom_sf(data=m) + #coastline layer
+  #geom_sf(data=s) + #countries layer
+  geom_point(data=locations[!locations$Site %in% c("Monterey","LaJolla","VanDamme","Sportfish"),],
+             aes(x=Longtitude,y=Latitude)) +
+  #coord_sf(ylim=c(26,40), xlim=c(-125,-112.5)) +
+  coord_sf(ylim=c(26,28.6), xlim=c(-116,-113)) +
+  geom_text_repel(data=locations[!locations$Site %in% c("Monterey","LaJolla","VanDamme","Sportfish"),],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1)
+
+# weak = water is N or E / strong = water is S or W
+locations$upwelling <- rep(NA,nrow(locations))
+locations[locations$Site=="PuntaPrieta",]$upwelling <- 0 #weak
+locations[locations$Site=="MorroPrieto",]$upwelling <- 1 #strong
+locations[locations$Site=="ElBajo",]$upwelling <- 0      #weak
+locations[locations$Site=="Bocanita",]$upwelling <- 1    #strong
+locations[locations$Site=="ClamBay",]$upwelling <- 0     #weak **
+locations[locations$Site=="Sportfish",]$upwelling <- 1   #strong
+locations[locations$Site=="LosGavilanes",]$upwelling <- 1#strong
+locations[locations$Site=="Monterey",]$upwelling <- 0    #weak
+locations[locations$Site=="PiedraPato",]$upwelling <- 1  #strong
+locations[locations$Site=="PuertoCastro",]$upwelling <- 1#strong
+locations[locations$Site=="ElKino",]$upwelling <- 0      #weak **
+locations[locations$Site=="LosMuertitos",]$upwelling <- 1#strong
+locations[locations$Site=="PuntaNorte",]$upwelling <- 0  #weak
+locations[locations$Site=="PuntaPerico",]$upwelling <-1  #strong
+locations[locations$Site=="Rincon",]$upwelling <- 1      #strong
+locations[locations$Site=="LaJolla",]$upwelling <- 1     #strong
+locations[locations$Site=="SanHipolito",]$upwelling <- 1 #strong
+locations[locations$Site=="VanDamme",]$upwelling <- 1    #strong
+ 
+# merge locations/upwelling info with variance info
+#head(regdf)
+#head(locations)
+regdf <- left_join(regdf,locations,by="Site")
+rm(variance_reg,sitekey)
+```
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# add regression line, leaving out sites that are in bays
+
+#regdf_sub <- regdf[!regdf$brock_plot==0,]
+regdf_strong <- regdf[regdf$upwelling==1,]
+regdf_weak <- regdf[regdf$upwelling==0,]
+
+
+m1 <- lm(regdf$variance_SST ~ regdf$highvar_bottom) #all sites
+m_strong <- lm(regdf_strong$variance_SST ~ regdf_strong$highvar_bottom) #strong sites
+m_weak <- lm(regdf_weak$variance_SST ~ regdf_weak$highvar_bottom) #weak sites
+#m4 <- lm(regdf$variance_SST ~ regdf$highvar_bottom + regdf$upwelling) #covariate
+
+
+lm_eqn_mean <- function(df){ # function to paste regression & r2 on plot
+  x = df$highvar_bottom
+  y = df$variance_SST
+    m <- lm(y ~ x, df)
+    eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq)) }
+
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=5, fig.height=10}
+# Blue sites not included in regression (m2 linear regression)
+
+ggplot(data=regdf_strong,aes(x=highvar_bottom, y=variance_SST)) +
+  geom_point() +
+  geom_point(data=regdf_weak,aes(x=highvar_bottom, y=variance_SST)) +
+  geom_abline(slope=m_strong$coefficients[2],
+              intercept = m_strong$coefficients[1], color="blue") +
+  # geom_abline(slope=m_weak$coefficients[2],
+  #             intercept = m_weak$coefficients[1],color="black") +
+  theme_classic() +
+  geom_text(x = 0.75, 
+            y = 1, 
+            label = lm_eqn_mean(regdf_strong), parse=TRUE) +
+  # geom_text(x = 0.75, 
+  #           y = 1.1, 
+  #           label = lm_eqn_mean(regdf_weak), parse = TRUE, color="black") +
+  xlab("bottom var [C^2]") +
+  ylab("SST var [C^2] (in SST obs - 10 yr smoothing)") +
+  geom_text_repel(data=regdf_weak,
+                  aes(x=highvar_bottom, y=variance_SST,label = Site),
+                  color="darkgrey",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  geom_text_repel(data=regdf_strong,
+                  aes(x=highvar_bottom, y=variance_SST,label = Site),
+                  color="blue",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  ggtitle("Black line = all sites\nBlue line = only blue sites")
+
+# All sites included in regression (m1 linear regression)
+ggplot(data=regdf,aes(x=highvar_bottom, y=variance_SST)) +
+  geom_point() +
+  geom_abline(slope=m1$coefficients[2],intercept = m1$coefficients[1]) +
+  theme_classic() +
+  geom_text(x = 0.75,
+            y = 0.8,
+            label = lm_eqn_mean(regdf), parse = TRUE) +
+  xlab("bottom var [C^2]") +
+  ylab("SST var [C^2] (in SST obs - 10 yr smoothing)") +
+  geom_text_repel(data=regdf,
+                  aes(x=highvar_bottom, y=variance_SST,label = Site),
+                  color="darkgrey",
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) +
+  ggtitle("All included in regression")
+
+
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# ---
+# simulate 10 years of bottom temp data using regression and 2.5 offset
+# compare stress time series w/using obs bottom data
+# ---
+
+# create empty cols for building the simulated time series
+SSTfede$highfreqnoise <- rep(NA,length=length(SSTfede[,1]))
+SSTfede$climatology_minus_2.5offset <- rep(NA,length=length(SSTfede[,1]))
+SSTfede$mSST <- rep(NA,length=length(SSTfede[,1]))
+site_vector <- unique(SSTfede$Site)
+
+years <- unique(SSTfede$year)
+# calc high freq in SST, then use equation and convert to bottom high
+# freq variance -- and store high freq var values in this df
+converted_bottomdf <- data.frame(
+  Site = rep(site_vector,length=length(site_vector)*length(years)),
+  year= rep(years,length=length(site_vector)*length(years)),
+  highfreq_SST = rep(NA,length=length(site_vector)*length(years)),
+  converted_bottom = rep(NA,length=length(site_vector)*length(years))
+)
+
+
+for(s in 1:length(site_vector)){ #for each site
+  
+  for(y in 1:length(years)){ #step through each year
+    
+    # calculate SST high freq variance for that year-site using the raw temp deviations
+    SST_high_freq <- var(SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[y], ]$dev_10,na.rm=TRUE)
+    
+    # store the SST high freq var in converted_bottomdf data frame
+    converted_bottomdf[converted_bottomdf$Site==site_vector[s] & converted_bottomdf$year==years[y],]$highfreq_SST <- SST_high_freq
+    
+    # ==== CHOOSE WHICH REGRESSION TO USE ==== #
+    # regression that uses all sites, or a subset of sites?
+    
+    # convert the SST high freq variance into high freq bottom temp variance
+    new_bottom_var <-
+       as.numeric((SST_high_freq - m1$coefficients[1])/m1$coefficients[2])
+    
+    # store the new bottom temp high freq var
+    converted_bottomdf[converted_bottomdf$Site==site_vector[s] & converted_bottomdf$year==years[y],]$converted_bottom <- new_bottom_var
+  }
+  
+}
+rm(s,y,SST_high_freq,new_bottom_var)
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=7}
+# ---
+# plot
+# ---
+# SST high freq var vs the converted bottom high freq var
+# Look for: are there negative high freq var values? --> if yes, need to address
+ggplot() + 
+  geom_point(data=converted_bottomdf[converted_bottomdf$converted_bottom>0,],
+             aes(x=converted_bottom,y=highfreq_SST,color=Site)) +
+  geom_point(data=converted_bottomdf[converted_bottomdf$converted_bottom<0,],
+             aes(x=converted_bottom,y=highfreq_SST,shape=Site)) +
+  xlab("high freq var SST") +
+  ylab("converted high freq bottom var\nusing all-sites regression ") +
+  geom_vline(xintercept = 0) + geom_hline(yintercept = 0) +
+  ggtitle("High freq var in SST 10 yr series is converted to high\n freq var for simulated bottom temp time series\n(each point is a site-year)")
+  
+
+
+# Which sites and years have negative high freq bottom var? (--> you have to filter these out!)
+# these sites are probably sites in bays
+# table(converted_bottomdf[converted_bottomdf$converted_bottom < 0,]$Site,
+#       converted_bottomdf[converted_bottomdf$converted_bottom < 0,]$year)
+
+
+# if high freq bottom var is negative, change it equal to high freq var in SST
+# ****note**** might need to change how I deal with negative variances
+converted_bottomdf$converted_bottom_noneg <- ifelse(converted_bottomdf$converted_bottom <0,converted_bottomdf$highfreq_SST,converted_bottomdf$converted_bottom)
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=7}}
+# now plot SST high freq var vs converted high freq var (no negatives)
+
+ggplot() + 
+  geom_point(data=converted_bottomdf,
+             aes(x=converted_bottom_noneg,y=highfreq_SST,color=Site)) +
+  geom_point(data=converted_bottomdf[converted_bottomdf$Site %in% c("Monterey","VanDamme"),],
+             aes(x=converted_bottom_noneg,y=highfreq_SST,shape=Site)) +
+  xlab("high freq var SST") +
+ ylab("converted high freq bottom var\nusing all-sites regression ") +
+  geom_vline(xintercept = 0) + geom_hline(yintercept = 0) +
+  ggtitle("If converted bottom temp high freq var < 0, \nmake equal to SST high freq var")
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# === GENERATE BOTTOM TEMP TIME SERIES === #
+
+# generate time series of bottom temp with converted high freq var
+set.seed(42) # the answer to the universe :)
+for (s in 1:length(site_vector)){ # for each site
+  for (f in 1:length(years)){ # in each year
+    
+    # random number generation with mean=0 and sd=sqrt of converted bottom var
+    SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[f],]$highfreqnoise <- 
+    rnorm(n=length(SSTfede[SSTfede$Site==site_vector[s] & SSTfede$year==years[f],]$highfreqnoise),
+          mean=0, sd= sqrt(converted_bottomdf[converted_bottomdf$Site==site_vector[s] & converted_bottomdf$year==years[f],]$converted_bottom_noneg)
+    ) # close rnorm generator 
+    
+  } # close year loop
+} # close site loop
+rm(s,f) # clean up
+#head(SSTfede) # check big df, did the cols fill in?
+#summary(SSTfede)
+
+
+# now that I have simulated bottom temp high freq variability in all years-sites,
+# I must adjust SST climatology by the 2.5 deg C offset. 
+SSTfede$climatology_minus_2.5offset <- SSTfede$Climatology - 2.5
+
+
+# last step to creating simulated bottom temp (filling in the mSST column):
+# add in the simulated high freq variability to the climatology-offset time series
+SSTfede$mSST <- SSTfede$climatology_minus_2.5offset + SSTfede$highfreqnoise
+
+
+# ---
+# check: how much does simulated bottom temp match temp logger data?
+# note: I have much more simulated bottom temp, only plot time that 
+# overlaps with temp loggers
+# ---
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=13, fig.height=35}
+# subset SSTfede to include only dates in bottomall (for plotting)
+sst_bottom <- semi_join(SSTfede,bottomall,by=c("Date","Site"))
+sst_bottom <- merge(sst_bottom,bottomall, by.x=c("Site", "Date"), by.y=c("Site", "Date"), all.x=FALSE, all.y=FALSE)
+pL <- as.list(rep(NA,length(site_vector)))
+for(s in 1:length(site_vector)){
+  pL[[s]] <- 
+    ggplot() +
+    geom_line(data=sst_bottom[sst_bottom$Site==site_vector[s],],
+              aes(x=Date,y=mSST,color="mSST")) +
+    geom_line(data=sst_bottom[sst_bottom$Site==site_vector[s],],
+              aes(x=Date,y=temp_bottom,
+              color="temp logger")) +
+    geom_line(data=sst_bottom[sst_bottom$Site==site_vector[s],],
+              aes(x=Date,y=Temperature,
+              color="SST")) +
+    ggtitle(paste(site_vector[s]))
+}
+rm(s)
+
+# run this do.call code to plot modified SST (simulated bottom temp),
+# actual bottom temp, and SST temp (raw and flagged observations)
+do.call(grid.arrange,c(pL,ncol=2))
+```
+
+```{r include=FALSE,echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# === STRESS FUNCTIONS === #
+
+# ---
+# Do the 4 stress tests on temp logger data and simulated bottom series
+# compare output at each site, for each stress method
+# ---
+#source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress1_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress2_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress3_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress4_function.r")
+
+# ---
+# notes:
+# 1) stress functions don't loop through years, I need to do this
+# outside the function
+#
+# 2) cols I need for stress functions: Site, Temperature, Date, Year
+# 'Temperature' could be bottom, SST, modified SST
+#
+# 3) output from stress functions: each spits out a data frame with
+# daily stress values
+#
+# 4) the sst_bottom data frame has multiple temperature cols, I
+# should subset the relevant columns and change headers bc
+# functions require consistent header info
+# ---
+
+
+# ---
+# Stress on simulated bottom temp (mSST):
+# ---
+mSST_temp <- SSTfede %>% select(Site,Date,year,mSST) #only relevant cols
+colnames(mSST_temp)[colnames(mSST_temp)=="mSST"] <- "Temperature" #renaming
+
+years <- unique(mSST_temp$year) #list of years in dataset
+
+mSST_stress1L <- as.list(rep(NA,length(years))) # loop over years, stress 1 method
+mSST_stress2L <- as.list(rep(NA,length(years))) # loop over years, stress 2 method
+mSST_stress3L <- as.list(rep(NA,length(years))) # loop over years, stress 3 method
+mSST_stress4L <- as.list(rep(NA,length(years))) # loop over years, stress 4 method
+
+# ---
+old <- Sys.time() # get start time
+for(y in 1:length(years)){ # for each year
+
+  d <- mSST_temp %>% filter(year==years[y]) # filter simulated bottom to year y
+
+  # stress 1 method
+  mSST_stress1L[[y]] <- stress1_fun(tempdata = d, site_vector = site_vector)
+
+  # stress 2 method
+  mSST_stress2L[[y]] <- stress2_fun(tempdata = d, site_vector = site_vector)
+
+  # stress 3 method
+  mSST_stress3L[[y]] <- stress3_fun(tempdata = d, site_vector = site_vector)
+
+  # stress 4 method
+  output <- stress4_fun(tempdata = d, site_vector = site_vector)
+  mSST_stress4L[[y]] <- output$tempdata_stress4
+
+}
+mSST_stress1 <- bind_rows(mSST_stress1L)
+mSST_stress2 <- bind_rows(mSST_stress2L)
+mSST_stress3 <- bind_rows(mSST_stress3L)
+mSST_stress4 <- bind_rows(mSST_stress4L)
+rm(y,d,mSST_stress1L,mSST_stress2L,mSST_stress3L,mSST_stress4L)
+# print elapsed time
+new <- Sys.time() - old # calculate difference
+print(new) # print in nice format
+
+
+# ---
+# Stress methods on bottom logger data:
+# ---
+bottomall <- bottomall %>% mutate(year=year(Date))
+logger_temp <- bottomall %>% select(Site,Date,year,temp_bottom) #only relevant cols
+colnames(logger_temp)[colnames(logger_temp)=="temp_bottom"] <- "Temperature" #renaming
+
+years <- unique(logger_temp$year) #list of years in dataset
+years <- years[!is.na(years)]
+
+logger_stress1L <- as.list(rep(NA,length(years))) # loop over years, stress 1 method
+logger_stress2L <- as.list(rep(NA,length(years))) # loop over years, stress 2 method
+logger_stress3L <- as.list(rep(NA,length(years))) # loop over years, stress 3 method
+logger_stress4L <- as.list(rep(NA,length(years))) # loop over years, stress 4 method
+
+# ---
+old <- Sys.time() # get start time
+for(y in 1:length(years)){ # for each year
+
+  d <- logger_temp %>% filter(year==years[y]) # filter simulated bottom to year y
+
+  # stress 1 method
+  logger_stress1L[[y]] <- stress1_fun(tempdata = d, site_vector = site_vector)
+
+  # stress 2 method
+  logger_stress2L[[y]] <- stress2_fun(tempdata = d, site_vector = site_vector)
+
+  # stress 3 method
+  logger_stress3L[[y]] <- stress3_fun(tempdata = d, site_vector = site_vector)
+
+  # stress 4 method
+  output <- stress4_fun(tempdata = d, site_vector = site_vector)
+  test <- output$tempdata_stress4
+  logger_stress4L[[y]] <- output$tempdata_stress4
+
+}
+logger_stress1 <- bind_rows(logger_stress1L)
+logger_stress2 <- bind_rows(logger_stress2L)
+logger_stress3 <- bind_rows(logger_stress3L)
+logger_stress4 <- bind_rows(logger_stress4L)
+rm(y,d,logger_stress1L,logger_stress2L,logger_stress3L,logger_stress4L)
+# print elapsed time
+new <- Sys.time() - old # calculate difference
+print(new) # print in nice format
+
+# ---
+# Combine dfs of simulated bottom and logger bottom for each method
+# keep only days in both data sets (logger much smaller than mSST)
+# ---
+mSST_stress1$datatype <- rep('mSST',length(mSST_stress1[,1]))
+logger_stress1$datatype <- rep('logger',length(logger_stress1[,1]))
+mSST_stress1 <- mSST_stress1 %>% select(datatype,Site,Date,year,Temperature,stress1_pos_vals)
+logger_stress1 <- logger_stress1 %>% select(datatype,Site,Date,year,Temperature,stress1_pos_vals)
+stress1_data <- rbind(logger_stress1,mSST_stress1)
+stress1_data <- stress1_data[stress1_data$Date %in% unique(logger_stress1$Date),]
+stress1_data$stress_method <- rep(1,length(stress1_data[,1]))
+colnames(stress1_data)[colnames(stress1_data)=="stress1_pos_vals"] <- 'daily_stress'
+
+mSST_stress2$datatype <- rep('mSST',length(mSST_stress2[,1]))
+logger_stress2$datatype <- rep('logger',length(logger_stress2[,1]))
+mSST_stress2 <- mSST_stress2 %>%
+  select(datatype,Site,Date,year,Temperature,stress2_degC_above_threshold)
+logger_stress2 <- logger_stress2 %>%
+  select(datatype,Site,Date,year,Temperature,stress2_degC_above_threshold)
+stress2_data <- rbind(logger_stress2,mSST_stress2)
+stress2_data <- stress2_data[stress2_data$Date %in% unique(logger_stress2$Date),]
+stress2_data$stress_method <- rep(2,length(stress2_data[,1]))
+colnames(stress2_data)[colnames(stress2_data)=="stress2_degC_above_threshold"] <- 'daily_stress'
+
+mSST_stress3$datatype <- rep('mSST',length(mSST_stress3[,1]))
+logger_stress3$datatype <- rep('logger',length(logger_stress3[,1]))
+mSST_stress3 <- mSST_stress3 %>%
+  select(datatype,Site,Date,year,Temperature,stress3_degC_above_thres_clim_max_mw)
+logger_stress3 <- logger_stress3 %>%
+  select(datatype,Site,Date,year,Temperature,stress3_degC_above_thres_clim_max_mw)
+stress3_data <- rbind(logger_stress3,mSST_stress3)
+stress3_data <- stress3_data[stress3_data$Date %in% unique(logger_stress3$Date),]
+stress3_data$stress_method <- rep(3,length(stress3_data[,1]))
+colnames(stress3_data)[colnames(stress3_data)=="stress3_degC_above_thres_clim_max_mw"] <- 'daily_stress'
+
+mSST_stress4$datatype <- rep('mSST',length(mSST_stress4[,1]))
+logger_stress4$datatype <- rep('logger',length(logger_stress4[,1]))
+mSST_stress4 <- mSST_stress4 %>% select(datatype,Site,Date,year,Temperature,stress4_dev)
+logger_stress4 <- logger_stress4 %>% select(datatype,Site,Date,year,Temperature,stress4_dev)
+stress4_data <- rbind(logger_stress4,mSST_stress4)
+stress4_data <- stress4_data[stress4_data$Date %in% unique(logger_stress4$Date),]
+stress4_data$stress_method <- rep(4,length(stress4_data[,1]))
+colnames(stress4_data)[colnames(stress4_data)=="stress4_dev"] <- 'daily_stress'
+
+# all stress data sets together!
+stressALL_data <- as.data.frame(bind_rows(stress1_data,stress2_data,stress3_data,stress4_data))
+#stressALL_data <- stressALL_data %>% filter(year==2017)
+
+
+# ===
+# Integrate daily stress values for each site-year
+# ===
+datatypes <- c('logger','mSST')
+stress_methods <- c(1,2,3,4)
+years <- unique(stressALL_data$year)
+stress_valsL <- as.list(rep(NA,length(stress_methods)))
+for(m in 1:length(stress_methods)){
+  stress_valsL[[m]] <-
+    stress_vals1 <- data.frame(
+      Site = rep(site_vector,each=length(years)),
+      year = rep(years,times=length(site_vector)),
+      integral = rep(NA,length=length(rep(site_vector,each=length(years)))),
+      datatype = rep('logger',length=length(rep(site_vector,each=length(years)))),
+      stress_method = rep(stress_methods[m],length(rep(site_vector,each=length(years))))
+    )
+}
+stress_valslogger <- bind_rows(stress_valsL)
+rm(m,stress_valsL)
+stress_valsL <- as.list(rep(NA,length(stress_methods)))
+for(m in 1:length(stress_methods)){
+  stress_valsL[[m]] <-
+    stress_vals1 <- data.frame(
+      Site = rep(site_vector,each=length(years)),
+      year = rep(years,times=length(site_vector)),
+      integral = rep(NA,length=length(rep(site_vector,each=length(years)))),
+      datatype = rep('mSST',length=length(rep(site_vector,each=length(years)))),
+      stress_method = rep(stress_methods[m],length(rep(site_vector,each=length(years))))
+    )
+}
+stress_valsmsst <- bind_rows(stress_valsL)
+rm(m,stress_valsL)
+stress_vals <- rbind(stress_valslogger, stress_valsmsst)
+rm(stress_valslogger, stress_valsmsst)
+
+
+
+for(m in 1:length(stress_methods)){
+  
+  for(d in 1:length(datatypes)){ # for each site
+
+    for(s in 1:length(site_vector)){ # and for each datatype
+
+      for(y in 1:length(years)){ # step through each year
+
+        # integrate daily stress values
+        #yy <- sdy$daily_stress
+        yy <- stressALL_data[stressALL_data$stress_method==stress_methods[m] &
+                             stressALL_data$datatype==datatypes[d] &
+                             stressALL_data$Site==site_vector[s] &
+                             stressALL_data$year==years[y],]$daily_stress
+
+        yy <- yy[!is.na(yy)]
+        xx <- seq(from=1,to=length(yy),by=1)
+        stress_vals[stress_vals$Site==site_vector[s] &
+                  stress_vals$datatype==datatypes[d] &
+                  stress_vals$year==years[y] &
+                  stress_vals$stress_method==stress_methods[m],]$integral <- trapz(x=xx,y=yy)
+        } #close year loop
+      } #close datatypes
+    } #close site
+  } #close stress method
+rm(m,d,s,y,yy,xx)
+# standardize stress values for each method-year-datatype (want relative stress across sites)
+stress_vals$relative_stress <- rep(NA,length(stress_vals[,1]))
+for(d in 1:length(datatypes)){
+  for(m in 1:length(stress_methods)){
+    for(y in 1:length(years)){
+      
+      # fill in relative stress among sites (divide each integral by the max integral)
+      stress_vals[stress_vals$datatype==datatypes[d] &
+                  stress_vals$stress_method==stress_methods[m] &
+                  stress_vals$year==years[y],]$relative_stress <-
+        stress_vals[stress_vals$datatype==datatypes[d] &
+                  stress_vals$stress_method==stress_methods[m] &
+                  stress_vals$year==years[y],]$integral /
+        max(stress_vals[stress_vals$datatype==datatypes[d] &
+                  stress_vals$stress_method==stress_methods[m] &
+                  stress_vals$year==years[y],]$integral)
+    }
+  }
+}
+
+ 
+s1.17 <- stress_vals %>% 
+  filter(stress_method==1,year=='2017') %>% 
+  select(Site,datatype,relative_stress) %>% 
+  spread(key=datatype,value=relative_stress) %>%
+  mutate(year=rep('2017')) %>% mutate(stress_method=rep('1'))
+
+s1.18 <- stress_vals %>% 
+  filter(stress_method==1,year=='2018') %>% 
+  select(Site,datatype,relative_stress) %>% 
+  spread(key=datatype,value=relative_stress) %>%
+  mutate(year=rep('2018')) %>% mutate(stress_method=rep('1'))
+
+s2.17 <- stress_vals %>% 
+  filter(stress_method==2,year=='2017') %>% 
+  select(Site,datatype,relative_stress) %>% 
+  spread(key=datatype,value=relative_stress) %>%
+  mutate(year=rep('2017')) %>% mutate(stress_method=rep('2'))
+s2.18 <- stress_vals %>% 
+  filter(stress_method==2,year=='2018') %>% 
+  select(Site,datatype,relative_stress) %>% 
+  spread(key=datatype,value=relative_stress) %>%
+  mutate(year=rep('2018')) %>% mutate(stress_method=rep('2'))
+
+s3.17 <- stress_vals %>% 
+  filter(stress_method==3,year=='2017') %>% 
+  select(Site,datatype,relative_stress) %>% 
+  spread(key=datatype,value=relative_stress) %>%
+  mutate(year=rep('2017')) %>% mutate(stress_method=rep('3'))
+s3.18 <- stress_vals %>% 
+  filter(stress_method==3,year=='2018') %>% 
+  select(Site,datatype,relative_stress) %>% 
+  spread(key=datatype,value=relative_stress) %>%
+  mutate(year=rep('2018')) %>% mutate(stress_method=rep('3'))
+
+s4.17 <- stress_vals %>% 
+  filter(stress_method==4,year=='2017') %>% 
+  select(Site,datatype,relative_stress) %>% 
+  spread(key=datatype,value=relative_stress) %>%
+  mutate(year=rep('2017')) %>% mutate(stress_method=rep('4'))
+s4.18 <- stress_vals %>% 
+  filter(stress_method==4,year=='2018') %>% 
+  select(Site,datatype,relative_stress) %>% 
+  spread(key=datatype,value=relative_stress) %>%
+  mutate(year=rep('2018')) %>% mutate(stress_method=rep('4'))
+
+stress_vals_plot <- rbind(s1.17,s1.18,
+                          s2.17,s2.18,
+                          s3.17,s3.18,
+                          s4.17,s4.18)
+ggplot(data=stress_vals_plot) +
+  facet_wrap(~stress_method) +
+  geom_point(aes(x=logger,y=mSST,color=year)) +
+  geom_abline(slope=1,intercept = 0) +
+  geom_text_repel(aes(x=logger,y=mSST,label=Site))
+  
+
+
+
+```
+
+
+
+

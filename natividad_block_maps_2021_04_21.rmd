@@ -1,0 +1,535 @@
+---
+title: "Natividad Blocks"
+author: "Mikaela Provost, Brock Woodson, Giulio De Leo, Fiorenza Micheli"
+date: "04/21/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(sf)
+library(raster)
+library(ggrepel)
+library(devtools)
+devtools::install_github("yutannihilation/ggsflabel")
+
+
+
+```
+
+  
+## Maps
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# get the shapefile (st_read uses sf pkg)
+f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/MEX.shp")
+r <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/Reservas_sitios_control.shp")
+
+# Isla Natividad shapefiles
+nat <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/Isla Natividadd.shp") # just island of Natividad
+nat$name <- rep("Isla Natividad",length(1:nrow(nat)))
+
+
+# shapefiles from Arturo; label attributes in each shapefile -- prep for combining
+Reservas_sitios_control <- st_read('C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/Reservas_sitios_control.shp')
+zoneE <- Reservas_sitios_control[Reservas_sitios_control$Bloque=="Reserva La Plana/Las Cuevas",]
+zoneE$name <- rep("Reserva La Plana_Las Cuevas",length(1:nrow(zoneE)))
+zoneE$zone <- rep("Zone E",length(1:nrow(zoneE)))
+zoneE$Id <- rep(0,length(1:nrow(zoneE)))
+zoneE <- zoneE[,c("name","zone","Id")]
+
+bajo_maria <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/bajo_maria.shp")
+bajo_maria$name <- rep("Bajo maria",length(1:nrow(bajo_maria)))
+bajo_maria$zone <- rep("Zone F",length(1:nrow(bajo_maria)))
+
+cabo_pruneda <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/cabo_pruneda.shp")
+cabo_pruneda$name <- rep("Cabo pruneda",length(1:nrow(cabo_pruneda)))
+cabo_pruneda$zone <- rep("Zone F",length(1:nrow(cabo_pruneda)))
+
+chuparrosa <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/chuparrosa.shp")
+chuparrosa$name <- rep("Chuparrosa",length(1:nrow(chuparrosa)))
+chuparrosa$zone <- rep("Zone F",length(1:nrow(chuparrosa)))
+
+el_placas <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/el_placas.shp")
+el_placas$name <- rep("El Placas",length(1:nrow(el_placas)))
+el_placas$zone <- rep("Zone F",length(1:nrow(el_placas)))
+
+el_triangulo <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/el_triangulo.shp")
+el_triangulo$name <- rep("El Triangulo",length(1:nrow(el_triangulo)))
+el_triangulo$zone <- rep("Zone F",length(1:nrow(el_triangulo)))
+
+enmedio <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/enmedio.shp")
+enmedio$name <- rep("Enmedio",length(1:nrow(enmedio)))
+enmedio$zone <- rep("Zone F",length(1:nrow(enmedio)))
+
+guanera <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/guanera.shp")
+guanera$name <- rep("Guanera",length(1:nrow(guanera)))
+guanera$zone <- rep("Zone A",length(1:nrow(guanera)))
+
+la_dulce <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/la_dulce.shp")
+la_dulce$name <- rep("La Dulce",length(1:nrow(la_dulce)))
+la_dulce$zone <- rep("Zone F",length(1:nrow(la_dulce)))
+
+la_vela <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/la_vela.shp")
+la_vela$name <- rep("La Vela",length(1:nrow(la_vela)))
+la_vela$zone <- rep("Zone F",length(1:nrow(la_vela)))
+
+
+lomalinda <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/lomalinda.shp")
+lomalinda$name <- rep("Lomalinda",length(1:nrow(lomalinda)))
+lomalinda$zone <- rep("Zone F",length(1:nrow(lomalinda)))
+
+los_anegados <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/los_anegados.shp")
+los_anegados$name <- rep("Lomalinda",length(1:nrow(los_anegados)))
+los_anegados$zone <- rep("Zone F",length(1:nrow(los_anegados)))
+
+piedras_altas <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/piedras_altas.shp")
+piedras_altas$name <- rep("Piedras altas",length(1:nrow(piedras_altas)))
+piedras_altas$zone <- rep("Zone F",length(1:nrow(piedras_altas)))
+
+punta_arena <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/punta_arena.shp")
+punta_arena$name <- rep("Punta arena",length(1:nrow(punta_arena)))
+punta_arena$zone <- rep("Zone F",length(1:nrow(punta_arena)))
+
+raymundo <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/raymundo.shp")
+raymundo$name <- rep("Raymundo",length(1:nrow(raymundo)))
+raymundo$zone <- rep("Zone F",length(1:nrow(raymundo)))
+
+los_anegados <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/los_anegados.shp")
+los_anegados$name <- rep("Los Anegados",length(1:nrow(los_anegados)))
+los_anegados$zone <- rep("Zone F",length(1:nrow(los_anegados)))
+
+sitios_control <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/sitios_control.shp") # control sites
+sitios_control$name <- rep("Control sites",length(1:nrow(sitios_control)))
+sitios_control$zone <- rep("Control sites",length(1:nrow(sitios_control)))
+
+zona_A <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/zona_A.shp") # zone A polygons
+zona_A$name <- rep("Zone A",length(1:nrow(zona_A)))
+zona_A$zone <- rep("Zone A",length(1:nrow(zona_A)))
+
+zonaB <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/zonaB.shp") # zone B polygons
+zonaB$name <- rep("Zone B",length(1:nrow(zonaB)))
+zonaB$zone <- rep("Zone B",length(1:nrow(zonaB)))
+
+zonaC <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/zonaC.shp") # zone C polygons
+zonaC$name <- rep("Zone C",length(1:nrow(zonaC)))
+zonaC$zone <- rep("Zone C",length(1:nrow(zonaC)))
+
+zonaD <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/zonaD.shp") # zone D polygons
+zonaD$name <- rep("Zone D",length(1:nrow(zonaD)))
+zonaD$zone <- rep("Zone D",length(1:nrow(zonaD)))
+
+zonas_gral <- st_read("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/zonas_gral.shp") #all the zones in one polygon
+
+# ---
+combo <- rbind(bajo_maria,cabo_pruneda,chuparrosa,el_placas,el_triangulo,enmedio,
+               los_anegados,lomalinda,la_vela,la_dulce,guanera,
+               piedras_altas,punta_arena,raymundo,los_anegados,
+               zona_A,zonaB,zonaC,zonaD,zoneE)
+
+combo.names <- rbind(bajo_maria,cabo_pruneda,chuparrosa,el_placas,el_triangulo,enmedio,
+               los_anegados,lomalinda,la_vela,la_dulce,guanera,
+               piedras_altas,punta_arena,raymundo,los_anegados)
+
+allblocks <- ggplot() +
+  geom_sf(data=nat) +
+  
+  geom_sf(data=combo,aes(fill=zone)) +
+  geom_sf_text(data=combo.names,
+    aes(label = name),size=3 ) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("") +
+  theme(legend.title = element_blank()) 
+
+
+# map with all blocks
+tiff("C:/Users/Mikaela/Documents/GitHub/natividad/figs/IslaNatividad_Blocks_Feedback.tif", res = 300, width = 8, height = 8, units = 'in' )
+allblocks
+dev.off()
+
+# export one shapefile with all blocks 
+st_write(combo, "C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/shapefiles/allblocks.shp")
+
+
+allblocks.test <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/allblocks.shp") 
+
+ggplot() +
+  geom_sf(data=nat) +
+  
+  geom_sf(data=allblocks.test,aes(fill=zone)) +
+  geom_sf_text(data=allblocks.test,
+    aes(label = name),size=3 ) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("") +
+  theme(legend.title = element_blank())
+
+
+ggplot() +
+  geom_sf(data=nat) +
+  # geom_sf(data=bajo_maria) +
+  # geom_sf(data=cabo_pruneda) +
+  # geom_sf(data=chuparrosa) +
+  # geom_sf(data=el_placas,fill='red') +
+  # geom_sf(data=el_triangulo,fill='grey') +
+  # geom_sf(data=enmedio,fill='black') +
+  # geom_sf(data=guanera,fill='black') +
+  # geom_sf(data=la_dulce,fill='green') +
+  # geom_sf(data=la_vela, fill='green') +
+  # geom_sf(data=lomalinda,fill='green') +
+  # geom_sf(data=los_anegados,fill='green') +
+  # geom_sf(data=piedras_altas,fill='green') +
+  # geom_sf(data=punta_arena,fill='green') +
+  # geom_sf(data=raymundo,fill='green') +
+  # geom_sf(data=los_anegados,fill='green') +
+  # geom_sf(data=sitios_control,fill='green') +
+  geom_sf(data=Reservas_sitios_control,fill='blue') +
+  
+  # geom_sf(data=zona_A,fill='blue') +
+  # geom_sf(data=zonaB,fill='orange') +
+  # geom_sf(data=zonaC,fill='yellow') +
+  # geom_sf(data=zonaD,fill='red') +
+  
+  # geom_sf(data=zonas_gral,fill='red') +
+  
+  theme_bw() + xlab("") +ylab("") + ggtitle("") +
+  theme(legend.title = element_blank()) 
+
+
+# what's the coordinate reference system for each file?
+st_crs(f)
+st_crs(r)
+st_crs(s)
+st_crs(nb)
+
+# make crs consistent for all files:
+f <- st_transform(f, crs=st_crs(s))
+r <- st_transform(r, crs=st_crs(s))
+
+
+
+
+
+locations <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+                       
+names(locations)[1] <- "Site"
+
+
+ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("") +
+  theme(legend.title = element_blank()) 
+
+ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=r, aes(fill=Tipo)) +
+  coord_sf(ylim=c(27.83,27.90), xlim=c(-115.24,-115.14)) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("") +
+  theme(legend.title = element_blank()) 
+
+
+```
+
+## Check Method 4 with Latitude
+
+```{r include=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=14,fig.height=8}
+Latcheck <- data.frame(
+  Site = site_vector,
+  meanT = rep(NA,length(site_vector)),
+  stdevT = rep(NA,length(site_vector)),
+  varT = rep(NA,length(site_vector)),
+  Lat= rep(NA,length(site_vector))
+)
+
+for(s in 1:length(site_vector)){
+  Latcheck[Latcheck$Site==site_vector[s],]$meanT <- 
+    round(mean(bottomall[bottomall$Site==site_vector[s],]$Temperature),digits=2)
+  
+  Latcheck[Latcheck$Site==site_vector[s],]$stdevT <- 
+    round(sd(bottomall[bottomall$Site==site_vector[s],]$Temperature),digits=2)
+  
+  Latcheck[Latcheck$Site==site_vector[s],]$varT <- 
+    round(var(bottomall[bottomall$Site==site_vector[s],]$Temperature),digits=2)
+  
+  Latcheck[Latcheck$Site==site_vector[s],]$Lat <- 
+    locations[locations$Site==site_vector[s],]$Latitude
+}
+
+c1a <- ggplot(data=Latcheck,aes(x=Lat,y=meanT)) +
+  geom_point() +
+  theme_bw() +
+  scale_x_reverse() +
+  geom_text_repel(data=Latcheck,
+                  aes(x=Lat, y=meanT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+  
+c1b <- ggplot(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],aes(x=Lat,y=meanT)) +
+  geom_point() +
+  scale_x_reverse() +
+  theme_bw() +
+  geom_text_repel(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Lat, y=meanT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+
+c2a <- ggplot(data=Latcheck,aes(x=Lat,y=stdevT)) +
+  geom_point() +
+  scale_x_reverse() +
+  theme_bw() +
+  geom_text_repel(data=Latcheck,
+                  aes(x=Lat, y=stdevT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1)  
+  
+c2b <- ggplot(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],aes(x=Lat,y=stdevT)) +
+  geom_point() +
+  theme_bw() +
+  scale_x_reverse() +
+  geom_text_repel(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Lat, y=stdevT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+
+
+c3a <- ggplot(data=Latcheck,aes(x=Lat,y=varT)) +
+  geom_point() +
+  scale_x_reverse() +
+  theme_bw() +
+  geom_text_repel(data=Latcheck,
+                  aes(x=Lat, y=varT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+  
+c3b <- ggplot(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],aes(x=Lat,y=varT)) +
+  geom_point() +
+  theme_bw() +
+  scale_x_reverse() +
+  geom_text_repel(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Lat, y=varT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+
+# plot_grid(c1a,c2a,c3a,
+#           c1b,c2b,c3b,
+#           nrow=2)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=15, fig.height=10}
+plot_grid(p1,p2,p3,p5,p6,nrow=2)
+
+```
+
+## Data rich sites
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+temp_logger_sites = data.frame('Sites' = unique(bottomall$Site))
+
+# timed-search data
+st <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/2007_2018_size_frequency_untabled_search_time.csv", stringsAsFactors = FALSE, header = TRUE)
+st <- st[st$Genusspecies == "Haliotis fulgens",] # keep only green abalone
+timed_search_sites = st %>% select(Site,Zone) %>% distinct()
+timed_search_sites = timed_search_sites[order(timed_search_sites$Zone,decreasing = TRUE),]
+
+# transect data
+md <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/0001_2006_to_2018_All_locations_invert.csv",stringsAsFactors = FALSE)
+md <- md[md$Species == "fulgens",] # keep only green abalone
+transect_sites = md %>% select(Site,Zone) %>% distinct()
+transect_sites <- transect_sites[order(transect_sites$Zone,decreasing = TRUE), ]
+
+# overlapping sites
+
+
+```
+
+We have temp loggers at 16 sites, but we don't have monitoring data and timed-search data at all these sites. Here is a break down of sites:
+
+Sites with temp loggers: `r temp_logger_sites`
+
+Timed-search sites: `r timed_search_sites`
+
+Transect sites: `r transect_sites `
+
+The only overlapping site is Plana. Are there more?
+
+
+
+## CPUE from timed-search data
+
+Below, is CPUE of abalone found in timed search data. At each site-year, >1 timed-serach was done. CPUE is the number of abalone found in one timed-search divided by the number of minutes. Mean CPUE (black dots) is the average of CPUEs for each site-year. Horizontal bars indicate standard deviation.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=16}
+
+# -----------------------------------------
+# Search time transect data
+# -----------------------------------------
+
+transect_abundances <- st %>% group_by(Site,Year,ID) %>% summarise(transect_abund = sum(TotalAbundance))
+h <- st %>% group_by(ID) %>% slice(1) %>% select(ID,search_time)
+transect_cpue <- right_join(transect_abundances,h,by="ID")
+transect_cpue$cpue <- round(transect_cpue$transect_abund / transect_cpue$search_time,digits=2)
+transect_cpue$site_yr <- paste(transect_cpue$Site,"-",transect_cpue$Year)
+
+site_yr_cpue <- transect_cpue %>% group_by(Site,Year) %>% summarise(mu_cpue=mean(cpue),sd_cpue=sd(cpue))
+site_yr_cpue$site_yr <- paste(site_yr_cpue$Site,"-",site_yr_cpue$Year)
+
+# ggplot(data=transect_cpue) +
+#   geom_pointrange(mapping = aes(x = cpue, y = site_yr),
+#                   stat = "summary",
+#                   fun.data=mean_sdl) +
+#   
+#   xlab("cpue (number of abalone / minute searched)")
+
+ggplot(site_yr_cpue) + 
+  geom_pointrange(aes(y=site_yr,x=mu_cpue,
+                      xmin=mu_cpue-sd_cpue,
+                      xmax=mu_cpue+sd_cpue)) +
+  xlab("cpue (number of abalone / minute searched)\n(bars = +/- sd)") +
+  ggtitle("CPUE from timed search data")
+
+
+```
+
+
+CPUE for sites of interest. CPUE using abalone of all sizes (black points) and CPUE of large abalone (blue points).
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=6, fig.height=10}
+# proportion of large abalone through time
+
+times_per_trans <- st %>% select(ID,Year,Site,search_time) %>% distinct()
+abalone_per_trans <- st %>% group_by(Site,Year,ID) %>% summarise(total_abund = sum(TotalAbundance),
+                                            large_abund = sum(TotalAbundance[DiameterCorrected > 15]))
+cpue <- right_join(abalone_per_trans,times_per_trans)
+cpue$totalcpue <- cpue$total_abund / cpue$search_time
+cpue$largecpue <- cpue$large_abund / cpue$search_time
+cpue <- cpue %>% group_by(Site,Year) %>% summarise(cpue.mean.all = mean(totalcpue),
+                                                   cpue.mean.lg = mean(largecpue))
+
+# plot cpue for all abalone and large abalone
+p <- as.list(rep(NA,length(fulsites)))
+for(i in 1:length(fulsites)){
+  p[[i]] <- ggplot(data = cpue[cpue$Site == fulsites[i],]) + 
+    # total cpue through time
+    geom_point(aes(x=Year,y=cpue.mean.all),color="black") + 
+    geom_line(aes(x=Year,y=cpue.mean.all),color="black") + 
+    # cpue for large ones
+    geom_point(aes(x=Year,y=cpue.mean.lg),color="blue") + 
+    geom_line(aes(x=Year,y=cpue.mean.lg),color="blue") + 
+    
+    theme_classic() +
+    ylab("H. fulgens (CPUE)") +
+    ylim(c(0,max(cpue$cpue.mean.all))) +
+    ggtitle(paste(mdf[mdf$Site == fulsites[i],]$Site))
+}
+do.call(grid.arrange,c(p,ncol=2))
+
+```
+
+## Size distributions of abalone using timed-search data
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=15, fig.height=13}
+
+mean_size <- st %>% 
+  group_by(Site,Year) %>%
+  summarise(mean_diam=mean(DiameterCorrected,na.rm = TRUE)) 
+
+
+st$site_yr <- paste(st$Site,"-",st$Year)
+st$site_zone <- paste(st$Site,"-",st$Zone)
+
+ggplot(data=st) +
+  geom_density(aes(x=DiameterCorrected)) +
+  geom_vline(aes(xintercept=mean_diam), data=mean_size,color="red",linetype="dashed") +
+  facet_grid(cols=vars(Site),rows=vars(Year)) +
+  theme_bw()
+
+```
+
+
+## Monitoring transect data
+
+Y-axis is density relative to 2018. For example, at Plana the density in 2010 is about equal to the density in 2018 which means relative density = 1. But in 2009, abalone density was ~4x compared to density in 2018. 
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=6, fig.height=10}
+
+# -----------------------------------------
+# Monitoring transect data
+# -----------------------------------------
+
+
+# sum green abalone in transects for each site-year
+mdf <- md %>% filter(Community %in% c('Isla_Natividad','El_Rosario'),
+              Zone == 'Reserve',
+              Species == 'fulgens')
+mdf <- mdf %>% group_by(Year, Site) %>% summarise(sum.per.site=sum(TotalAbundance))
+mdf$density <- rep(NA,length(mdf[,1]))
+mdf$numtransects <- rep(NA,length(mdf[,1]))
+
+for(i in 1:length(mdf$Year)){ # step through each site-year combo
+  a <- mdf[i,] # subset to one site-year
+  mdf[i,]$density <- a$sum.per.site / meta[meta$Site== a$Site & meta$Year== a$Year,]$totalTransect_site_yr # calc the density using total abundance / num of transects
+  mdf[i,]$numtransects <- meta[meta$Site== a$Site & meta$Year== a$Year,]$totalTransect_site_yr
+  rm(a)
+} # note: density is not an average in this calculation
+
+# relative density at each plot over time plots
+mdf$relativedensity <- rep(NA,length=length(mdf[,1]))
+
+for(s in 1:length(fulsites)){ # step through sites
+  years <- mdf[mdf$Site==fulsites[s],]$Year # years sampled at site
+  years <- sort(years,decreasing=TRUE)
+  
+  for(y in 1:length(years)){ # for each year
+    mdf[mdf$Site==fulsites[s] & mdf$Year==years[y],]$relativedensity <-
+      mdf[mdf$Site==fulsites[s] & mdf$Year==years[y],]$density / mdf[mdf$Site==fulsites[s] & mdf$Year==years[1],]$density # divide the density by the density in most recent year
+  }
+  rm(years)
+}
+
+p <- as.list(rep(NA,length(fulsites)))
+for(i in 1:length(fulsites)){
+  p[[i]] <- ggplot(mdf[mdf$Site == fulsites[i],],aes(x=Year,y=relativedensity)) + 
+    geom_point() + geom_line() + theme_classic() +
+    ylab("H. fulgens (relative density)") +
+    ylim(c(0,max(mdf$density))) +
+    ggtitle(paste(mdf[mdf$Site == fulsites[i],]$Site))
+}
+do.call(grid.arrange,c(p,ncol=2))
+
+
+```
+
+
+
+

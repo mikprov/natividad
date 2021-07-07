@@ -1,0 +1,447 @@
+---
+title: "Kelp Safe Spaces"
+author: "Mikaela M. Provost"
+date: "05/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+library(tmap)
+library(rgdal)
+library(readr)
+library(broom)
+library(RColorBrewer)
+library(sf)
+# workshop.packages <- c("sp", "rgdal", "rgeos", "raster", "dismo", "leaflet", "RColorBrewer", "classInt")
+# lapply(workshop.packages, library, character.only = TRUE)         
+
+# ---------------------------------------------
+# Plan
+# 1) Read in kelp data, 1km bin locations for kelp, and SST locations. Deal with some formatting
+# 2) Group kelp data into the 1km bins. Which 30m sites belong to which 1km bins?
+# 3) Analyze the persistence of kelp in each 1km bin site looking at the trend & variability over 1 or 2 yrs in each bin.
+# 4) Count the number of persistent 1 or 2 year periods at each 1km bin site.
+# ---------------------------------------------
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# ---------------------------------------------
+# 1) Read in kelp data, 1km bin locations for kelp, and SST locations. Deal with some formatting  
+# ---------------------------------------------
+# read in kelp data (30m sites)
+k <- read.csv(file="C:/Users/Mikaela/Box Sync/Natividad/kelp_bio_baja_2009_2019.csv",stringsAsFactors = FALSE)
+# read in 1 km bins locations (will be locations for SST too)
+k_1km <- read.csv(file="C:/Users/Mikaela/Box Sync/Natividad/kelp_data_1km_bins.csv",stringsAsFactors = FALSE)
+
+# check: compare max and min lat in 30m kelp data & brock's 1km bins
+# brocks data goes much farther north (37deg) compared to Kyle's (32deg)
+# in the south they are similar (~27deg)
+summary(k$lat)
+summary(k_1km$Longitude)
+k_1km <- k_1km %>% drop_na(Latitude) # rm locations with NA, not sure why there are NAs, I got this from Brock. He might know. 
+
+# num of sites in 1 km bins for kelp: 
+nrow(k_1km)
+
+
+# ---
+# This is the SST time series data at 1 km locations. 
+sst_1km <- read.csv(file="C:/Users/Mikaela/Box Sync/Natividad/sst_1km_blocks_allyears.csv",
+                    header = TRUE, check.names = FALSE)
+# sst_1km[1:5,1:10]
+# testdf <- sst_1km[1:5,1:10]
+# class(colnames(testdf)[4])
+# test <- t(sst_1km[1,3:10])
+# dimnames(test) <- NULL
+# class(test)
+# testdf[1,3:10] <- test
+# colnames(testdf) <- testdf[1,]
+# class(testdf[1,3:10])
+# test <- as.Date(test, format="%Y-%m-%d")
+
+# looking at NA vals in SST site locations:
+sst_1km$na_count <- apply(sst_1km,1,function(x) sum(is.na(x))) #remove NA values
+sst_1km <- sst_1km %>% select(Longitude,Latitude,na_count)
+nrow(sst_1km[sst_1km$na_count < 4200,]) # 
+hist(sst_1km$na_count,xlab="count of NAs per site in 6205 days",
+     main="Number of sites with varying amount of NAs")
+
+
+# --- 
+# subset 1km bin data (k_1km) based on SST data (sst_1km) 
+k_1km$latlong <- paste(k_1km$Latitude,"_",k_1km$Longitude,sep="")
+sst_1km$latlong <- paste(sst_1km$Latitude,"_",sst_1km$Longitude,sep="")
+k_1kmsub <- k_1km[k_1km$latlong %in% sst_1km$latlong,]
+# k_1kmsub --> this is 1 km sites in SST data AND kelp bin data
+
+
+
+# ---------------------------------------------
+# 2) Group kelp data into the 1km bins. Which 30m sites belong to which 1km bins?
+# ---------------------------------------------
+
+# Since Latitude is in deg decimals, in deg decimals what's the equalivant to 500 meters?
+# Assume earth circumference of 40075km
+# Length in meters of 1deg of lat = 111.32km
+
+# 0.5km / 111.3km = degs in 500 m
+degs500 <- 0.5/111.32
+
+# Draw a square around each 1km point
+# Lat +/- degs500 --> max and min Lat
+# Long +/- degs500 --> max and min Long
+
+k_1kmsub$num_of_sites <- NA # how many 30m sites are included in each 1km site?
+k_1kmsub$siteID <- seq(from=1,to=nrow(k_1kmsub),by=1) # give each 1km site an ID
+k$siteID_1km <- rep(NA,nrow(k)) # add col for storing the 1km site IDs
+
+system.time( 
+  
+  for(s in 1:length(k_1kmsub$Latitude)){ # for each 1km site
+  
+  # find the rows (sites) in k (30m sites) that are within 500m
+  thissite <- k_1kmsub[s,]
+  maxLat <- thissite$Latitude + degs500
+  minLat <- thissite$Latitude - degs500
+  maxLong <- thissite$Longitude + degs500
+  minLong <- thissite$Longitude - degs500
+  
+  # count the number of sites within the square km
+  k_1kmsub[s,]$num_of_sites <- nrow(k[k$lat > minLat & k$lat < maxLat & k$long > minLong & k$long < maxLong,])
+  
+  # store the 1km site ID next to the relevant 30m sites
+  if(k_1kmsub[s,]$num_of_sites>0) {
+    k[k$lat > minLat & k$lat < maxLat & k$long > minLong & k$long < maxLong,]$siteID_1km <- thissite$siteID
+  }  
+  
+  # clean up
+  rm(maxLat,minLat,maxLong,minLong)
+  print(s)
+ 
+  } 
+)
+rm(s,thissite)
+
+# Quick review: how many 1km bin sites have no kelp sites?
+nrow(k_1kmsub[k_1kmsub$num_of_sites==0,])
+
+# how many 1km sites DO have kelp sites?
+nrow(k_1kmsub[k_1kmsub$num_of_sites>0,])
+
+# make sure k_1kmsub df only has sites that actually have kelp data
+k_1kmsub <- k_1kmsub[k_1kmsub$siteID %in% k$siteID_1km,]
+
+# ---------------------------------------------
+# 3) Analyze the persistence of kelp in each 1km bin site looking at the trend & variability over 1 or 2 yrs in each bin.
+# ---------------------------------------------
+head(k_1kmsub)
+head(k)
+# 3 criteria for a 1 km bin over the 10 y period to have 'kelp persistence':
+# 1. not overall significantly decreasing, and
+# 2. standard deviation > 1 or 2 (try both), and
+# 3. kelp biomass never goes to zero
+
+# How much missing data is there at each?
+k1 <- k[!is.na(k$siteID_1km),] #keep only kelp data that was assigned to 1km bin
+k1$no.missing <- apply(k1[,3:(ncol(k1)-1)],1,function(x) sum(is.na(x)))
+k1$per.missing <- k1$no.missing / (ncol(k1)-3)
+rm(k)
+# answer: most sites have <10% missing satellite data (ie clouds), no need to filter this out bc it's so low
+
+
+
+# For each site, sum all 30m kelp data into that bin per quarter observation. 
+# Then, do a moving window of 2 years & check the 3 persistence criteria on summed kelp:
+test <- k1 %>% select(-c("lat","long","siteID_1km","no.missing","per.missing"))
+test1 <- data.frame(matrix(nrow=nrow(k_1kmsub),ncol=ncol(test),data=NA))
+colnames(test1) <- colnames(test)
+k_1kmsub <- cbind(k_1kmsub,test1)
+kelp_cols <- colnames(test1)
+rm(test,test1)
+
+# If NaN has 0 on either side, replace NaN with 0
+rows <- 1:nrow(k1)
+for(i in 1:length(rows)){ #step through 30m kelp sites
+  
+  pNA <- which(is.na(k1[rows[i],kelp_cols])) #which values are NA
+  pNA <- pNA[!pNA %in% c(1,40)] #if the last obs shows up as NA, rm it (can't check on both sites) 
+  pNA <- ifelse(length(pNA)==0,2,pNA)
+  
+  for(p in 1:length(pNA)){
+    k1[rows[i],kelp_cols][pNA[p]] <-
+      ifelse( k1[rows[i],kelp_cols][(pNA[p]+1)] == 0 & k1[rows[i],kelp_cols][pNA[p]-1] == 0,
+              0,
+              k1[i,kelp_cols][pNA[p]])
+  }
+}
+rm(i,p,pNA)
+
+
+
+siteIDs <- unique(k_1kmsub$siteID)
+
+for(i in 1:nrow(k_1kmsub)){ # for each site in 1km bin
+  
+  d <- k1[k1$siteID_1km==siteIDs[i], # keep only the kelp data belonging to this site
+          kelp_cols] # keep only the corresponding kelp cols
+  k_1kmsub[k_1kmsub$siteID==siteIDs[i],kelp_cols] <- colSums(d,na.rm=TRUE)
+  
+}
+
+
+# Do the rle function on summed 1km bin sites
+rr <- apply(k_1kmsub[,kelp_cols],MARGIN=1,function(x) rle(x)) #rle
+xx <- lapply(rr, function(x) as.data.frame(do.call("cbind",x)))
+names(xx) <- k_1kmsub$siteID
+xx <- lapply(xx, function(x) x[complete.cases(x),] ) #rm rows with nan
+#xx <- lapply(xx, function(x) x[x$values==0,]) #keep only zeros, no kelp
+x <- bind_rows(xx,.id='id')
+rm(xx,rr)
+x$num_of_2y_periods <- rep(NA,nrow(x))
+x$siteID <- as.numeric(x$id)
+x$num_of_2y_periods <- ifelse(x$lengths>=8 & x$lengths<16,1,
+                              ifelse(x$lengths>=16 & x$lengths<24,2,
+                                     ifelse(x$lengths>=24 & x$lengths<32,3,
+                                            ifelse(x$lengths>=32 & x$lengths<40,4,
+                                                   ifelse(x$lengths==40,5,0)))))
+
+xx <- x %>% group_by(siteID) %>% 
+  summarise(freq2yr = sum(num_of_2y_periods)) 
+k_1kmsub1 <- left_join(k_1kmsub,xx,by="siteID") 
+
+
+
+
+
+# shapefiles for mapping kelp sites
+m <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/MEX.shp")
+f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/countries.shp")
+
+# transform fedecoop projection to match MEX projection
+m <- st_transform(m, crs=st_crs(s))
+
+kelpfreq <- ggplot() +
+  geom_sf(data=m) +
+  #geom_sf(data=f) +
+  geom_point(data=k_1kmsub1,aes(x=Longitude,y=Latitude,color=freq2yr)) +
+  coord_sf(ylim=c(27.8,27.9), xlim=c(-115.3,-115.1)) 
+  #coord_sf(ylim=c(26,28.5), xlim=c(-116,-112))
+
+ 
+
+# map: 1 km bin sites with their corresponding 30m sites 
+mexshp <- ggplot() +
+  geom_sf(data = m) +
+  geom_point(data = k1,aes(x=long,y=lat),color='green') +
+  geom_point(data = k_1kmsub1,aes(x=Longitude,y=Latitude)) +
+  coord_sf(ylim=c(27.8,27.9), xlim=c(-115.3,-115.1)) +
+  ggtitle("MEX shapefile")
+
+countriesshp <- ggplot() +
+  geom_sf(data = s) +
+  geom_point(data = k1,aes(x=long,y=lat),color='green') +
+  geom_point(data = k_1kmsub1,aes(x=Longitude,y=Latitude)) +
+  coord_sf(ylim=c(27.8,27.9), xlim=c(-115.3,-115.1)) +
+  ggtitle("countries shapefile")
+  
+  
+
+
+
+
+  
+
+
+
+
+
+
+
+```
+
+### Map 1
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=11}
+# latitude plots
+#tiff("C:/Users/Mikaela/Documents/GitHub/natividad/plots/kelp_map1.tif", res = 300, width = 12, height = 11, units = 'in' )
+ggplot(s, aes(x=long, y=lat, group=group)) +
+  geom_polygon(alpha=0.5,fill="lightgrey") +
+  ylab("Latitude") + xlab("Longitude") +
+  geom_polygon(data=f,aes(x=long,y=lat,group=group),alpha=0.5) +
+  geom_path(color="black") +
+  theme_minimal() +
+  # geom_point(data=k_locations1[k_locations1$freq2yr==0,],
+  #            aes(x=long,y=lat),color="grey",inherit.aes = FALSE) +
+  # geom_point(data=k_locations1[k_locations1$freq2yr==1,],
+  #            aes(x=long,y=lat),color="deepskyblue",inherit.aes = FALSE) +
+  # geom_point(data=k_locations1[k_locations1$freq2yr==2,],
+  #            aes(x=long,y=lat),color="deepskyblue3",inherit.aes = FALSE) +
+  # geom_point(data=k_locations1[k_locations1$freq2yr==3,],
+  #            aes(x=long,y=lat),color="firebrick3",inherit.aes = FALSE) +
+  coord_fixed(ylim=c(26,33), xlim=c(-118,-110)) 
+#dev.off()
+```
+
+### Map 2
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=11}
+#tiff("C:/Users/Mikaela/Documents/GitHub/natividad/plots/kelp_map3.tif", res = 300, width = 7, height = 6, units = 'in' )
+p <- ggplot(s, aes(x=long, y=lat, group=group)) +
+  geom_polygon(alpha=0.5,fill="lightgrey") +
+  geom_polygon(data=f,aes(x=long,y=lat,group=group),inherit.aes=FALSE,alpha=0.1) +
+  geom_path(color="black") +
+  theme_minimal() +
+  geom_point(data=k_locations1[k_locations1$freq2yr==0,],
+             aes(x=long,y=lat),color="grey",inherit.aes = FALSE) +
+  geom_point(data=k_locations1[k_locations1$freq2yr==1,],
+             aes(x=long,y=lat),color="deepskyblue",inherit.aes = FALSE) +
+  geom_point(data=k_locations1[k_locations1$freq2yr==2,],
+             aes(x=long,y=lat),color="deepskyblue3",inherit.aes = FALSE) +
+  geom_point(data=k_locations1[k_locations1$freq2yr==3,],
+             aes(x=long,y=lat),color="firebrick3",inherit.aes = FALSE) +
+  coord_fixed(ylim=c(26,28.5), xlim=c(-116,-113)) 
+#dev.off()
+
+
+```
+
+### Map 3
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=11}
+#tiff("C:/Users/Mikaela/Documents/GitHub/natividad/plots/kelp_map3.tif", res = 300, width = 7, height = 6, units = 'in' )
+p<- ggplot(s, aes(x=long, y=lat, group=group)) +
+  geom_polygon(alpha=0.5,fill="lightgrey") +
+  geom_polygon(data=f,aes(x=long,y=lat,group=group),inherit.aes=FALSE,alpha=0.1,linetype=1) +
+   geom_path(color="black") +
+  theme_minimal() +
+  geom_point(data=k_locations1[k_locations1$freq2yr==0,],
+             aes(x=long,y=lat),color="grey",inherit.aes = FALSE) +
+  geom_point(data=k_locations1[k_locations1$freq2yr==1,],
+             aes(x=long,y=lat),color="deepskyblue",inherit.aes = FALSE) +
+  geom_point(data=k_locations1[k_locations1$freq2yr==2,],
+             aes(x=long,y=lat),color="deepskyblue3",inherit.aes = FALSE) +
+  geom_point(data=k_locations1[k_locations1$freq2yr==3,],
+             aes(x=long,y=lat),color="firebrick3",inherit.aes = FALSE) +
+  coord_fixed(ylim=c(26,28.5), xlim=c(-116,-113)) 
+  #coord_fixed(ylim=c(27.5,28.5), xlim=c(-116,-115)) 
+#dev.off()
+p <- ggplotly(p)
+# save output
+htmlwidgets::saveWidget(as_widget(p),file="C:/Users/Mikaela/Documents/GitHub/natividad/plots/kelp/kelp_map1.html")
+
+```
+
+
+```{r include=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+
+# #2. try plotting using base R
+# plot(k$long, k$lat, col='red', main='Baja')
+# #d[is.na(d)] <- 0
+# 
+# #3. Create Spatial Points object from scratch
+# kelp_coord <- cbind(k$long, k$lat) 
+# pts <- SpatialPoints(kelp_coord)
+# # function SpatialPoints coarses those lat and lon into spatial points
+# # now there is room to assign coordinate system & attach attributes
+# # creates an object that is recognized as a spatial object, not just x,y
+# 
+# showDefault(pts)
+# #assign coordinate reference system
+# pts <- SpatialPoints(kelp_coord, proj4string=CRS('+proj=longlat +datum=WGS84'))
+# #inspect coordinate reference system
+# crs(pts)
+# #combine with other columns, aka attributes
+# df <- k_locations1 %>% dplyr::select(id,freq2yr)
+# # from my csv data file, pull only extra information, not lat and lon
+# ptsdf <- SpatialPointsDataFrame(pts, data=df)
+# # combine the spatial points I just made with the spatial dataframe
+# ptsdf
+# showDefault(ptsdf)
+# # --- notes
+# # ptsdf <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+# # is the same as:
+# # pts <- SpatialPoints(lizard_coord, proj4string=CRS('+proj=longlat +datum=WGS84'))
+# 
+# 
+# # define coordinates for data frame 
+# #3. Reading Shapefiles
+# 
+# #load in the provinces data (downloaded from naturalearthdata.com)
+# s <- shapefile("countries.shp")
+# s
+# # many files associated with shapefile. As a group, make up the shapefile
+# # look for coordinate ref system, it should be fine
+# plot(s)
+# plot(ptsdf, add=TRUE, col="red", lwd=3)
+# 
+# # #writing shapefiles
+# # outfile <- 'test.shp'
+# # shapefile(s, outfile, overwrite=TRUE)
+# 
+# 
+# 
+# 
+# 
+# # Kelp deforestation lasting ~2 years triggered mass (80%) abalone mortality resulting in the closure of the recreational abalone fishery.  
+# # 
+# # This figure shows the frequency of kelp deforestation at different time periods. The x-axis is the number of consecutive quarters (4 quarters = 1 year) that a site had no kelp biomass. The solid vertical line shows the 2 year mark. The dashed line is 1 year.
+# # 
+# # Number of sites = `r length(d$lat)`
+# # 
+# # Number of quarters per site = `r length(d1[1,])` (`r length(d1[1,])/4` years)
+
+```
+
+```{r include=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=5}
+# ggplot(data=x,aes(x=lengths)) + 
+#   geom_histogram(bins=40) +
+#   geom_vline(xintercept = 8) +
+#   geom_vline(xintercept = 4,linetype="dashed") +
+#   geom_text(x=9,y=300000,label="2 years",hjust=0) +
+#   xlab("Number of consecutive quarters with no kelp")
+
+```
+
+
+```{r}
+# Extra code, might need later
+
+# ---
+# Finding coastline orientation at each 1km site
+# ---
+
+# First, bin data north of the big bay (lat > 28.5)
+k_1km_N <- k_1km[k_1km$Latitude > 28.5,]
+k_1km_S <- k_1km[k_1km$Latitude < 28.5,]
+
+nrow(k_1km_N)
+nrow(k_1km_S)
+#diff <- k_1km_N$Latitude[1:232] - k_1km_N$Latitude[2:233]
+diff <- k_1km_N$Latitude[1:(nrow(k_1km_N)-1)] - k_1km_N$Latitude[2:nrow(k_1km_N)]
+diff <- c(diff,NA)
+k_1km_N$diff <- diff
+k_1km_N$flag_neg <- ifelse(k_1km_N$diff<0,1,0) #flag negative diffs
+
+nrow(k_1km_N[k_1km_N$flag_neg==0,])
+diff1 <- k_1km_N[k_1km_N$flag_neg==0,]$Latitude[1:(nrow(k_1km_N)-1)] - k_1km_N[k_1km_N$flag_neg==0,]$Latitude[2:nrow(k_1km_N)]
+
+which(diff1<0)
+
+
+ggplot()+
+  geom_point(data=k,aes(x=long,y=lat),color='green') +
+  geom_point(data=k_1km_N,aes(x=Longitude,y=Latitude,color=flag_neg)) 
+
+
+
+```

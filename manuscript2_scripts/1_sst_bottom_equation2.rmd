@@ -1,0 +1,637 @@
+---
+title: "Method Development for SST Conversion"
+author: "Mikaela M. Provost"
+date: "06/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+library(pracma)
+library(viridis)
+library(lemon)
+library(lubridate)
+library(zoo)
+library(tidyverse)
+library(stats)
+library(sf)
+library(ggpubr)
+
+# Plan:
+# 1. Use Brock's climatology for regression, read in SST and bottom loggers
+# 2. Calc high freq variance in SST
+# 3. Calculate high freq variance in bottom 
+# 4. Classify each site as strong or weak upwelling
+# 5. Plot high frequency regression 
+# --------------------------------------
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# --------------------------------------
+# 1. Use Brock's climatology for regression, read in SST and bottom loggers
+# --------------------------------------
+# read in SST 
+file_names <- list.files(path = "C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/sstfedecoop_may18",pattern = "csv") 
+file_names <- unlist(strsplit(file_names,split="_temp_18May21.csv"), use.names=FALSE)
+filesL <- as.list(rep(NA,length=length(file_names)))
+names(filesL) <- file_names
+for(f in 1:length(file_names)){
+  filesL[[f]] <- read.csv(paste("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/sstfedecoop_may18/",
+                file_names[f],"_temp_18May21.csv",sep=""),stringsAsFactors = FALSE)} #end loop
+SSTfede <- bind_rows(filesL,.id="Site")
+SSTfede$Date <- as.Date(SSTfede$Date,format="%Y-%m-%d") #date problems
+SSTfede <- SSTfede %>% mutate(year = year(Date))
+#write.csv(SSTfede,file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/forBrock_high_freq_var/SSTfede.csv")
+
+# pull out the raw SST observations (flag=0 is raw)
+SSTfede$temp_sst_raw <- rep(NA,length=length(SSTfede[,1]))
+SSTfede$temp_sst_raw <- ifelse(SSTfede$flag < 1, SSTfede$Temperature, "NA")
+SSTfede$temp_sst_raw <- as.numeric(as.character(SSTfede$temp_sst_raw))
+rm(filesL,file_names,f) # clean up
+
+# NOTE: Van Damme SST is all NA, did not read in that file
+site_vector <- unique(SSTfede$Site) # use in for loops
+years <- unique(SSTfede$year) # use in for loops
+
+# read in bottom data
+d <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+colnames(d)[colnames(d) == "UTC_DateTime"] <- "UTC_Date_Time"
+bottomfede <- d %>% dplyr::select(Site,Temperature,Date,UTC_Date_Time)
+
+# read in data - bottom mm & mp
+d1 <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/001_IslaNatividad_MorroPrietoPuntaPrieta_alldata_trimmed.csv",stringsAsFactors = FALSE)
+d1$Date <- as.Date(d1$Date,format="%Y-%m-%d")
+bottommppp <- d1 %>% 
+  filter(Site %in% c('MorroPrieto','PuntaPrieta'), Instrument_Type == 'MiniDOT') %>% 
+  dplyr::select(Site,Temperature,Date,UTC_Date_Time)
+# combine mp & mm sites with all the others
+bottomall <- rbind(bottomfede,bottommppp)
+colnames(bottomall)[colnames(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d1,d,bottomfede,bottommppp)
+
+# rm VanDamme bc I don't have SST for this site
+bottomall <- bottomall[!bottomall$Site=="VanDamme",]
+
+# Update: don't reduce 10 min to daily for calculating high freq variance
+# keep only one temp observation per day (miniDOT collects temp every 10 min)
+#bottomall <- bottomall %>% group_by(Site,Date) %>% sample_n(1)
+
+# --------------------------------------
+# plot SST time series and bottom temp logger time series per site
+# -------------------------------------- 
+b_plot <- bottomall %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% select(Site,temp_bottom,Date) #reduce to 1 temp/day for plots
+s_plot <- SSTfede %>% 
+  select(Site,Date,Temperature,Climatology)
+colnames(s_plot)[colnames(s_plot)=="Temperature"] <- "SST"
+pdf <- left_join(b_plot,s_plot,by=c("Site","Date"))
+
+pL <- as.list(rep(NA,length=length(unique(pdf$Site))))
+site_vector <- site_vector[!site_vector=="VanDamme"]
+for(s in 1:length(site_vector)){
+  pL[[s]] <- ggplot(data=pdf[pdf$Site==site_vector[s],]) +
+    geom_line(aes(x=Date,y=temp_bottom),color="blue") +
+    geom_line(aes(x=Date,y=SST),color="orange") +
+    geom_line(aes(x=Date,y=Climatology),color="orange") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 30, hjust=1, vjust=1)) +
+    ylab("Temperature C") + xlab("") +
+    ylim(8,28) +
+    ggtitle(site_vector[s])
+}
+
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/figS1_sst_logger_temp_time_series_partA.tiff", res=300, height = 12, width = 9, units="in")
+do.call("grid.arrange", c(pL[1:8], ncol = 2)) 
+dev.off()
+
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/figS1_sst_logger_time_series_partB.tiff", res=300, height = 12, width = 9, units="in")
+do.call("grid.arrange", c(pL[9:17], ncol = 2)) 
+dev.off()
+rm(pL,s,b_plot,s_plot,pdf)
+
+# --------------------------------------
+# 2. calc high freq variance in SST
+# (a) using power spectrum (same method used for bottom temp)
+# old method: using deviations from climatology (original method)
+# --------------------------------------
+# (2a) --- 
+# in SST data, sample interval is in days already (1 day)
+site_vector <- unique(SSTfede$Site)
+sampleinterval = 1
+pSSTsp <- as.list(rep(NA,length=length(site_vector)))    #spectra plots
+pSSTsplog <- as.list(rep(NA,length=length(site_vector))) #spectra plots, log axis
+
+regressiondf_sst <- data.frame(
+  Site = site_vector,
+  highvar_sst = rep(NA,length=length(site_vector)))
+
+for(s in 1:length(site_vector)){ #for each site
+  
+  # subset to site
+  d <- SSTfede[SSTfede$Site == site_vector[s],]
+  
+  # sst spectrum (using raw observations only)
+  spR <- spec.pgram(d$Temperature,spans=c(10,10),taper=0.1,plot = FALSE,detrend = TRUE)
+  
+  spRdf <- data.frame(
+    freq = spR$freq/sampleinterval,
+    freq1 = spR$freq,
+    spec = spR$spec*(spR$freq/sampleinterval),
+    spec1 = spR$spec)
+  
+  # store plots
+  pSSTsplog[[s]] <- ggplot(data=spRdf,aes(x=log10(freq),y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - SST (raw+interpolated)",sep="")) +
+    xlab("log10(freq (1/day))") + ylab("log10(spec*freq)") +
+    ylim(c(-2,2.5)) +
+    theme(legend.position="none") 
+  
+  pSSTsp[[s]] <- ggplot(data=spRdf[spRdf$freq < 10,],aes(x=freq,y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - SST (raw+interpolated)",sep="")) +
+    xlab("freq (1/day)") + ylab("log10(spec*freq)") +
+    ylim(c(-2,2.5)) +
+    theme(legend.position="none") 
+  
+  regressiondf_sst[regressiondf_sst$Site == site_vector[s],]$highvar_sst <-
+    trapz(x=spRdf[spRdf$freq > 0.1 ,]$freq1,
+          y=spRdf[spRdf$freq > 0.1 ,]$spec1 * 2)
+    
+}
+rm(spRdf,d,s,spR,site_vector,sampleinterval)
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/figS2_sst_spectra.tiff", res=300, height = 24, width = 9, units="in")
+do.call("grid.arrange", c(pSSTsp,ncol = 2)) 
+dev.off()
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/figS2_sst_spectra_logxaxis.tiff", res=300, height = 24, width = 9, units="in")
+do.call("grid.arrange", c(pSSTsplog,ncol = 2)) 
+dev.off()
+rm(pSSTsplog,pSSTsp)
+
+
+# --------------------------------------
+# 3. Calculate high freq variance in bottom 
+# --------------------------------------
+# use spectrums to calc high freq variance
+sampleinterval = 10/(10*6*24) #units is days, 10*6=min in hr, *24=min in day
+site_vector <- unique(bottomall$Site)
+
+pBR <- as.list(rep(NA,length=length(site_vector)))    #spectra plots
+pBRlog <- as.list(rep(NA,length=length(site_vector))) #spectra plots, log axis
+regressiondf_bottom <- data.frame(
+  Site = site_vector,
+  highvar_bottom = rep(NA,length=length(site_vector)))
+
+for(s in 1:length(site_vector)){ #for each site
+  
+  # subset to site
+  d <- bottomall[bottomall$Site == site_vector[s],]
+  
+  # bottom spectrum 
+  spR <- spec.pgram(d$temp_bottom,spans=c(10,10),taper=0.1,plot = FALSE,detrend = TRUE)
+  
+  spRdf <- data.frame(
+    freq = spR$freq/sampleinterval,
+    freq1 = spR$freq,
+    spec = spR$spec*(spR$freq/sampleinterval),
+    spec1 = spR$spec)
+  
+  # store plots
+  pBRlog[[s]] <- ggplot(data=spRdf,aes(x=log10(freq),y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("log10(freq (1/day))") + ylab("log10(spec*freq)") +
+    ylim(c(-2,2.5)) +
+    theme(legend.position="none") 
+  
+  pBR[[s]] <- ggplot(data=spRdf[spRdf$freq < 10,],aes(x=freq,y=log10(spec))) + 
+    geom_line() + ggtitle(paste(d$Site[1]," - 10 min data",sep="")) +
+    xlab("freq (1/day)") + ylab("log10(spec*freq)") +
+    ylim(c(-2,2.5)) +
+    theme(legend.position="none") 
+  
+  regressiondf_bottom[regressiondf_bottom$Site == site_vector[s],]$highvar_bottom <-
+    trapz(x=spRdf[spRdf$freq > 0.1 ,]$freq1,
+          y=spRdf[spRdf$freq > 0.1 ,]$spec1 * 2)
+  
+    
+}
+rm(spRdf,d,s,spR,site_vector,sampleinterval)
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/figS3_bottom_spectra.tiff", res=300, height = 24, width = 9, units="in")
+do.call("grid.arrange", c(pBR,ncol = 2)) 
+dev.off()
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/figS3_bottom_spectra_logxaxis.tiff", res=300, height = 24, width = 9, units="in")
+do.call("grid.arrange", c(pBRlog,ncol = 2)) 
+dev.off()
+rm(pBRlog,pBR)
+
+
+# --------------------------------------
+# 4. Classify each site as strong or weak upwelling
+# --------------------------------------
+regdf <- left_join(regressiondf_bottom,regressiondf_sst,by="Site")
+
+sitekey <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/siteskey_fixed.csv",stringsAsFactors = F)
+colnames(sitekey)[colnames(sitekey)=="bsites"] <- "Site"
+sitekey$Ssites <- NULL
+#write.csv(sitekey,file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/forBrock_high_freq_var/sitekey.csv")
+regdf <- left_join(regdf,sitekey,by="Site")
+
+
+# classify each site as 1 = strong upwelling, 0 = week upwelling
+# I eye-checked each site on a map
+# try sf package
+# m <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/MEX.shp")
+# f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+# s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/countries.shp")
+
+locations <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+names(locations)[1] <- "Site"
+
+#sites <- locations$Site
+
+# -----
+# skip plotting if sites have already been classified
+# -----
+# data_zoom <- locations[locations$Site=="Sportfish",]
+# # zoomed - in
+# ggplot() +
+#   #geom_sf(data=m) + #coastline layer
+#   geom_sf(data=s) + #coastline layer
+#   geom_point(data=data_zoom,
+#              aes(x=Longtitude,y=Latitude)) +
+#   coord_sf(ylim=c((data_zoom$Latitude-0.5),(data_zoom$Latitude+0.5)), 
+#            xlim=c((data_zoom$Longtitude-0.5),(data_zoom$Longtitude+0.5))) +
+#   geom_text_repel(data=data_zoom,
+#                   aes(x=Longtitude, y=Latitude,label = Site),
+#                   segment.color = "grey30",
+#                   size = 4,
+#                   na.rm = TRUE,
+#                   nudge_x = -0.2,
+#                   box.padding = 1) 
+# # zoomed - out
+# ggplot() +
+#   geom_sf(data=m) + #coastline layer
+#   #geom_sf(data=s) + #countries layer
+#   geom_point(data=locations[!locations$Site %in% c("Monterey","LaJolla","VanDamme"),],
+#              aes(x=Longtitude,y=Latitude)) +
+#   #coord_sf(ylim=c(26,40), xlim=c(-125,-112.5)) +
+#   coord_sf(ylim=c(26,31), xlim=c(-116,-113)) +
+#   geom_text_repel(data=locations[!locations$Site %in% c("Monterey","LaJolla","VanDamme"),],
+#                   aes(x=Longtitude, y=Latitude,label = Site),
+#                   segment.color = "grey30",
+#                   size = 4,
+#                   na.rm = TRUE,
+#                   nudge_x = -0.2,
+#                   box.padding = 1)
+# rm(data_zoom,m,f,s,sites)
+# -----
+
+# weak = water is N or E / strong = water is S or W
+locations$upwelling <- rep(NA,nrow(locations))
+locations[locations$Site=="PuntaPrieta",]$upwelling <- 0 #weak
+locations[locations$Site=="MorroPrieto",]$upwelling <- 1 #strong
+locations[locations$Site=="ElBajo",]$upwelling <- 0      #weak
+locations[locations$Site=="Bocanita",]$upwelling <- 1    #strong
+locations[locations$Site=="ClamBay",]$upwelling <- 1     #strong
+locations[locations$Site=="Sportfish",]$upwelling <- 1   #strong
+locations[locations$Site=="LosGavilanes",]$upwelling <- 1#strong
+locations[locations$Site=="Monterey",]$upwelling <- 0    #weak
+locations[locations$Site=="PiedraPato",]$upwelling <- 1  #strong
+locations[locations$Site=="PuertoCastro",]$upwelling <- 1#strong
+locations[locations$Site=="ElKino",]$upwelling <- 0      #weak
+locations[locations$Site=="LosMuertitos",]$upwelling <- 1#strong
+locations[locations$Site=="PuntaNorte",]$upwelling <- 0  #weak
+locations[locations$Site=="PuntaPerico",]$upwelling <-1  #strong
+locations[locations$Site=="Rincon",]$upwelling <- 1      #strong
+locations[locations$Site=="LaJolla",]$upwelling <- 1     #strong
+locations[locations$Site=="SanHipolito",]$upwelling <- 1 #strong
+locations[locations$Site=="VanDamme",]$upwelling <- 1    #strong
+
+# locations$Upwelling <- ifelse(locations$upwelling >0,"strong","weak")
+# write.csv(locations, file="C:/Users/Mikaela/Documents/GitHub/natividad/manuscript1_figs/table1_sites.csv")
+# merge locations/upwelling info with variance info
+#head(regdf)
+#head(locations)
+regdf <- left_join(regdf,locations,by="Site")
+rm(sitekey,regressiondf_sst, regressiondf_bottom,locations)
+
+
+
+
+# --------------------------------------
+# 5. Plot high frequency regression 
+# --------------------------------------
+
+regdf$upwelling <- as.factor(regdf$upwelling)
+
+# take log10 of SST and Bottom high freq variance for calc power law model
+regdf$highvar_bottom_log <- log10(regdf$highvar_bottom)
+regdf$highvar_sst_log <- log10(regdf$highvar_sst)
+
+regdf_strong <- regdf[regdf$upwelling==1,]
+regdf_weak <- regdf[regdf$upwelling==0,]
+
+# ---
+# regressions using different combinations of sites
+# ---
+m_strong <- lm(highvar_bottom ~ highvar_sst,data=regdf_strong) #strong sites
+m_weak <- lm(highvar_bottom ~ highvar_sst,data=regdf_weak) #weak sites
+m_all_log <- lm(highvar_bottom_log ~ highvar_sst_log,data=regdf)
+
+m_strong_log <- lm(highvar_bottom_log ~ highvar_sst_log,data=regdf_strong)
+m_all_lm <- lm(highvar_bottom ~ highvar_sst,data=regdf) #lm forced through origin
+
+
+xsst = seq(from=0.01,to=2,by=0.01)
+logdata_all <- data.frame(
+  ybot = (10^(m_all_log$coefficients[1]))*((xsst)^m_all_log$coefficients[2]),
+  xsst = xsst )
+
+logdata_strong <- data.frame(
+  ybot = (10^(m_strong_log$coefficients[1]))*((xsst)^m_strong_log$coefficients[2]),
+  xsst = xsst
+)
+rm(xsst)
+
+
+
+lm_eqn_mean <- function(df){ # function to paste regression & r2 on plot from linear regression
+  x = df$highvar_sst
+  y = df$highvar_bottom
+    m <- lm(y ~ x, df)
+    eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq)) }
+
+
+log_eqn_mean <- function(df){ # function to paste regression & r2 on plot from log regression
+  x = df$highvar_sst_log
+  y = df$highvar_bottom_log
+    m <- lm(y ~ x, df)
+    eq <- substitute(italic(y) == italic(x)^a %.% 10^b*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq)) }
+
+
+
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=5, fig.height=10}
+# Blue sites not included in regression (m2 linear regression)
+
+fig1a <- ggplot(data=regdf,aes(x=highvar_sst, y=highvar_bottom,color=upwelling)) +
+  geom_point() +
+  scale_color_manual(values=c("dodgerblue","seagreen3")) +
+  
+  # lm: weak
+  geom_abline(slope=m_weak$coefficients[2], size=0.8,
+              intercept = m_weak$coefficients[1],color="dodgerblue",linetype='solid') +
+  # log: strong
+  geom_line(data=logdata_strong,aes(x=xsst,y=ybot),color="seagreen3",linetype='dashed',size=1) +
+  
+  xlim(0,1.1) + ylim(0,1.1) +
+  theme_classic() +
+  
+  # equation label - strong upwelling (log)
+  geom_text(x=0.3,
+            y=1,
+            size=3,
+            label=expression(paste(underline("Fit to strong upwelling sites:"))),
+            color="black") +
+  # log_strong
+   geom_text(x = 0.3,
+            y = 0.95,
+            size=3,
+            #hjust = 0,
+            label = log_eqn_mean(regdf_strong),parse=TRUE,color="seagreen3") +
+  # equation label - weak upwelling (linear)
+  geom_text(x=0.3,
+            y=0.85,
+            size=3,
+            label=expression(paste(underline("Fit to weak upwelling sites:"))),
+            color="black") +
+  # lm_weak
+  geom_text(x = 0.3,
+            y = 0.8,
+            size=3,
+            #hjust=0,
+            label = lm_eqn_mean(regdf_weak),parse=TRUE,color="dodgerblue") +
+  xlab(expression(paste("High frequency variance in SST temperature, \u00b0",C^2,sep=""))) +
+  ylab(expression(paste("High frequency variance in bottom, \u00b0",C^2,sep=""))) +
+  theme(legend.position = "none",
+        text = element_text(size = 10))  +
+  geom_text_repel(data=regdf,
+                  aes(x=highvar_sst, y=highvar_bottom,label = Site, color=upwelling),
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5) 
+
+figS4 <- ggplot(data=regdf,aes(x=highvar_sst, y=highvar_bottom,color=upwelling)) +
+  geom_point() +
+  scale_color_manual(values=c("dodgerblue","seagreen3")) +
+
+  # lm: all
+  geom_abline(slope=m_all_lm$coefficients[2], size=0.8,
+              intercept=m_all_lm$coefficients[1],color="grey",linetype='solid') +
+  # lm: strong
+  geom_abline(slope=m_strong$coefficients[2], size=0.8,
+              intercept = m_strong$coefficients[1], color="seagreen3",linetype='solid') +
+  # lm: weak
+  geom_abline(slope=m_weak$coefficients[2], size=0.8,
+              intercept = m_weak$coefficients[1],color="dodgerblue",linetype='solid') +
+  # log: all
+  geom_line(data=logdata_all,aes(x=xsst,y=ybot),color="grey",linetype='dashed',size=1) +
+
+  # log: strong
+  geom_line(data=logdata_strong,aes(x=xsst,y=ybot),color="seagreen3",linetype='dashed',size=1) +
+
+  xlim(0,1.1) + ylim(0,1.1) +
+  theme_classic() +
+
+  # equation label - all sites
+  geom_text(x=0.3,
+            y=1,
+            size=3,
+            label=expression(paste(underline("Fit to all sites:"))),
+            color="black") +
+  # lm_all
+  geom_text(x = 0.3,
+            y = 0.95,
+            size=3,
+            #hjust= 0,
+            label = lm_eqn_mean(regdf),parse=TRUE,color="grey") +
+  # log_all
+  geom_text(x = 0.3,
+            y = 0.89,
+            size=3,
+            #hjust = 0,
+            label = log_eqn_mean(regdf),parse=TRUE,color="grey") +
+
+  # equation label - strong upwelling
+  geom_text(x=0.3,
+            y=0.79,
+            size=3,
+            label=expression(paste(underline("Fit to strong upwelling sites:"))),
+            color="black") +
+  # lm_strong
+  geom_text(x = 0.3,
+            y = 0.74,
+            size=3,
+            #hjust = 0,
+            label = lm_eqn_mean(regdf_strong),parse=TRUE,color="seagreen3") +
+  # log_strong
+   geom_text(x = 0.3,
+            y = 0.68,
+            size=3,
+            #hjust = 0,
+            label = log_eqn_mean(regdf_strong),parse=TRUE,color="seagreen3") +
+  # equation label - weak upwelling
+  geom_text(x=0.3,
+            y=0.58,
+            size=3,
+            label=expression(paste(underline("Fit to weak upwelling sites:"))),
+            color="black") +
+  # lm_weak
+  geom_text(x = 0.3,
+            y = 0.52,
+            size=3,
+            #hjust=0,
+            label = lm_eqn_mean(regdf_weak),parse=TRUE,color="dodgerblue") +
+  xlab(expression(paste("High frequency variance in SST temperature, \u00b0",C^2,sep=""))) +
+  ylab(expression(paste("High frequency variance in bottom, \u00b0",C^2,sep=""))) +
+  theme(legend.position = "none",
+        text = element_text(size = 10))  +
+  geom_text_repel(data=regdf,
+                  aes(x=highvar_sst, y=highvar_bottom,label = Site, color=upwelling),
+                  segment.color = "grey",
+                  size = 3,
+                  na.rm = TRUE,
+                  box.padding = 0.5)
+  
+
+# tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/fig2_regression_plot_v1.tiff", res=300, height = 6, width = 7, units="in")
+# fig1a
+# dev.off()
+
+jpeg(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/fig2_regression_plot_v2.jpeg", res=400, height = 6, width = 7, units="in")
+fig1a
+dev.off()
+  
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/figS4_5_regressions_plot.tiff", res=300, height = 6, width = 7, units="in")
+figS4
+dev.off()
+
+rm(logdata_all,logdata_strong,figS4)
+
+# ---------------------------------------
+# Fig 1b: frequency of average temp difference between SST and bottom
+# ---------------------------------------
+site_vector <- unique(SSTfede$Site)
+temp_diffs <- data.frame(
+  Site = site_vector,
+  sst_mean = rep(NA,length(site_vector)),
+  bot_mean = rep(NA,length(site_vector)),
+  mean_diff = rep(NA,length(site_vector))  )
+bottom_hold <- bottomall %>% group_by(Site,Date) %>% sample_n(1)
+SSTfede_hold <- SSTfede[SSTfede$Date %in% bottom_hold$Date,]
+
+# Get climatology for each site
+# use loess() and set span=1.5 months
+# span = 90 / number of days in ts = fraction of time series that is 1.5 months
+bottom_hold$Climatology <- rep(NA,length=length(bottom_hold$Site))
+
+for(s in 1:length(site_vector)){
+    df <- bottom_hold[bottom_hold$Site==site_vector[s],]
+    df$index <- seq(from=1,to=length(df$Site),by=1)
+    test <- loess(temp_bottom~index,data=df,span=(90/length(df$index)))
+    bottom_hold[bottom_hold$Site==site_vector[s],]$Climatology <- test$fitted}
+rm(df,test,s)  
+
+for(s in 1:length(site_vector)){
+  temp_diffs[temp_diffs$Site==site_vector[s],]$sst_mean <- 
+    mean(SSTfede_hold[SSTfede_hold$Site==site_vector[s],]$Climatology)
+  temp_diffs[temp_diffs$Site==site_vector[s],]$bot_mean <-
+    mean(bottom_hold[bottom_hold$Site==site_vector[s],]$Climatology)
+  temp_diffs[temp_diffs$Site==site_vector[s],]$mean_diff <-
+    temp_diffs[temp_diffs$Site==site_vector[s],]$sst_mean - temp_diffs[temp_diffs$Site==site_vector[s],]$bot_mean
+}
+rm(s)
+
+fig1b <- ggplot() + 
+  geom_histogram(data=temp_diffs,aes(x=mean_diff),
+                 binwidth = 1,col="black",fill="grey") +
+  theme_classic() + 
+  xlab("Mean difference in temperature\n(SST - bottom temperature) \u00b0C")+
+  ylab("Number of sites") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 8)) 
+
+# ---------------------------------------
+# Fig 1c: plot SST and bottom temp from loggers for 1 site
+# ---------------------------------------
+
+pL <- as.list(rep(NA,length=length(site_vector)))
+cols <- c("SST" = "magenta", "Bottom" = "blue")
+for(s in 1:length(site_vector)){
+  dfs <- SSTfede_hold[SSTfede_hold$Site==site_vector[s],]
+  dfb <- bottom_hold[bottom_hold$Site==site_vector[s],]
+  pL[[s]] <- ggplot() +
+    geom_line(data=dfs,aes(x=Date,y=Temperature,color="SST")) +
+    geom_line(data=dfs,aes(x=Date,y=Climatology,color="SST")) +
+    geom_line(data=dfb,aes(x=Date,y=temp_bottom,color="Bottom")) +
+    geom_line(data=dfb,aes(x=Date,y=Climatology,color="Bottom")) +
+    labs(y="Temperature \u00b0C",x="",color="",
+         title=paste(site_vector[s])) +
+    scale_color_manual(values=cols) +
+    theme_classic() +
+    ylim(c(8,28)) +
+    theme(legend.position = c(0.2, 0.3),
+          axis.text.x = element_text(angle=0),
+          plot.title = element_text(vjust=-5, hjust=0.05),
+          axis.text = element_text(size = 8),
+          axis.title = element_text(size = 8)) 
+  
+}
+rm(s,dfs,dfb,SSTfede_hold,bottom_hold,temp_diffs,cols) #clean up
+fig1c <- pL[[6]]
+
+# ---------------------------------------
+# Fig 1a-c: format & export
+# ---------------------------------------
+
+
+tiff(file="C:/Users/Mikaela/Documents/GitHub/natividad/manuscript2_figs/fig1abc.tiff", 
+     units="in", width=8, height=5, res=300)
+# lay <- rbind(c(1,1,1,2,2),
+#              c(1,1,1,3,3))
+# grid.arrange(grobs=fig1list,
+#              layout_matrix=lay,
+#              labels=c("a)","b)","c)"))
+left_col <- plot_grid(fig1b,fig1c,labels=c("b)","c)"),label_size = 12,ncol=1)
+plot_grid(fig1a,left_col,labels=c("a)"),label_size = 12,ncol=2)
+dev.off()
+
+rm(left_col,fig1a,fig1b,fig1c,logdata_all,logdata_strong,pL,xsst)
+
+```
+
+
+

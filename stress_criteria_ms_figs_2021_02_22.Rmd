@@ -1,0 +1,864 @@
+---
+title: "Stress Critera Manuscript Figures"
+author: "Mikaela Provost, Brock Woodson, Giulio De Leo, Fiorenza Micheli"
+date: "01/21/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+library(pracma)
+library(viridis)
+library(lemon)
+library(lubridate)
+library(zoo)
+library(tidyverse)
+library(stats)
+library(sf)
+library(viridis)
+library(patchwork)
+#install.packages("patchwork")
+
+# load functions --> ***** CHECK for MG or MP *****
+source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+# load functions --> ***** CHECK for MG or MP *****
+source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress1_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress2_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress3_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress4_function.r")
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in bottom data -- #
+
+d <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomall <- d %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% 
+  select(Site,Temperature,Date)# randomly select temp per day
+bottomall <- bottomall %>% mutate(year = year(Date)) %>% mutate(month=month(Date))
+#names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d)
+site_vector <- unique(bottomall$Site)
+
+
+# testing --------
+# n_occur <- data.frame(table(bottomall[bottomall$Site==site_vector[9],]$Date))
+# n_occur[n_occur$Freq >1,]
+
+# check number of weeks I have for each site
+# and check if the week numbers throughout the year also match
+# (I want to look at stress for comparible weeks)
+#head(bottomall)
+#table(bottomall$Site,bottomall$month)
+# in general: sites cover almost the same time range
+
+```
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -------------------------------------------
+# Data frame to store stress values per site per method
+# -------------------------------------------
+
+site_stress_values <- data.frame(
+  Site = site_vector,
+    # values for method 1: variability
+  integral_m1 = rep(NA,length=length(site_vector)),
+  integral_m1_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m1 = rep(NA,length=length(site_vector)),
+    # values for method 2: thresholds
+  integral_m2 = rep(NA,length=length(site_vector)),
+  integral_m2_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m2 = rep(NA,length=length(site_vector)),
+    
+    # values for method 3: combo
+  integral_m3a = rep(NA,length=length(site_vector)),
+  integral_m3a_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m3 = rep(NA,length=length(site_vector)),
+  
+  integral_m3b = rep(NA,length=length(site_vector)),
+  integral_m3b_S = rep(NA,length=length(site_vector)),
+  
+    # values for method 4: curve
+  integral_m4dev = rep(NA,length=length(site_vector)),
+  integral_m4dev_S = rep(NA,length=length(site_vector)),
+  
+  integral_m4abs = rep(NA,length=length(site_vector)),
+  integral_m4abs_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m4 = rep(NA,length=length(site_vector)))
+
+
+
+
+# -------------------------------------------
+# Method 1: short-term variability, integrate short-term variability curve 
+# -------------------------------------------
+# moving window to calculate expected T
+
+wts <- c(0.1,0.2,0.4,0.8)
+wts <- wts/sum(wts) #make sure weights add up to 1
+wtsp <- round(wts*100,digits=0)
+
+tempdata_stress1 <- stress1_fun(tempdata=bottomall,
+                                site_vector=site_vector)
+
+
+
+
+# -------------------------------------------
+# Method 2: integrate temperature curve for when temp is >site-specific threshold
+# -------------------------------------------
+
+tempdata_stress2 <- stress2_fun(tempdata=bottomall,
+                                site_vector=site_vector)
+
+
+
+# -------------------------------------------
+# Method 3: climatology of potential max temp - short term variability (cooling off effect)
+# -------------------------------------------
+
+
+tempdata_stress3 <- stress3_fun(tempdata=bottomall,
+                                site_vector = site_vector)
+
+
+
+
+# -------------------------------------------
+# Method 4: thermal performance curve
+# -------------------------------------------
+
+# define params
+# alpha=0.75
+# E_r=0.65
+# E_i=2.035
+# k=8.62e-5
+# Tmax=25
+
+# stress4_fun returns a list with 2 data frames: tempdata with stress4 vals
+# and curves which is the performance & inverted perf curves
+hold <- stress4_fun(tempdata=bottomall,site_vector = site_vector,
+            alpha=2*0.75,E_r=2*0.65,E_i=2*2.035,k=2*8.62e-5,Tmax=2*25)
+tempdata_stress4 <- hold$tempdata_stress4
+curves <- hold$curves
+rm(hold)
+
+
+
+
+# -------------------------------------------
+# Integrals
+# -------------------------------------------
+
+
+# ---
+# Stress method 1
+# ---
+for(s in 1:length(site_vector)){ #for each site
+  d <- tempdata_stress1[tempdata_stress1$Site==site_vector[s],]
+  
+  xx <- seq(from=1,
+            to=length(d$stress1_pos_vals),
+            by=1)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m1 <-
+    trapz(x=xx,y=d$stress1_pos_vals) # integrate abs(stress vals)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m1 <- 
+    length(d$stress1_pos_vals)} # length of time series
+
+rm(s,d,xx) 
+
+
+# ---
+# Stress method 2
+# ---
+for(s in 1:length(site_vector)){ #for each site
+  d <- tempdata_stress2[tempdata_stress2$Site==site_vector[s],]
+  
+  xx <- seq(from=1,
+            to=length(d$stress2_degC_above_threshold),
+            by=1)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m2 <-
+    trapz(x=xx,y=d$stress2_degC_above_threshold) # integrate abs(stress vals)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m2 <- 
+    length(d$stress2_degC_above_threshold)} # length of time series
+rm(s,d,xx) 
+
+
+# ---
+# Stress method 3
+# ---
+
+# 2 methods:
+# (1) subtract daily values, then integrate 
+# (2) subtract standardized integrals
+
+
+# (1) subtract daily values, then integrate 
+
+tempdata_stress3$degC_above_minus_shtvar <- rep(NA,length(tempdata_stress3$Site))
+for(s in 1:length(site_vector)){ # for each site...
+  
+  tempdata_stress3[tempdata_stress3$Site==site_vector[s],]$degC_above_minus_shtvar <- 
+    # take the daily degC above threshold...
+    tempdata_stress3[tempdata_stress3$Site==site_vector[s],]$stress3_degC_above_thres_clim_max_mw -
+    # and minus the daily stress from short term variation
+    tempdata_stress1[tempdata_stress1$Site==site_vector[s],]$stress1_pos_vals
+}
+rm(s)
+
+for(s in 1:length(site_vector)){ # now we integrate these vals, for each site..
+  d <- tempdata_stress3[tempdata_stress3$Site==site_vector[s],]
+  xx <- seq(from=1,
+            to=length(d$degC_above_minus_shtvar),
+            by=1)
+  # integrate abs(stress vals)
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m3a <-
+    trapz(x=xx,y=d$degC_above_minus_shtvar) 
+  
+  # length of time series
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m3 <- 
+    length(d$degC_above_minus_shtvar)} 
+rm(s,d,xx)
+
+
+# (2) subtract standardized integrals
+for(s in 1:length(site_vector)){ # now we integrate these vals, for each site..
+  d <- tempdata_stress3[tempdata_stress3$Site==site_vector[s],]
+  xx <- seq(from=1,
+            to=length(d$stress3_degC_above_thres_clim_max_mw),
+            by=1)
+  # integrate abs(stress vals)
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m3b <-
+    trapz(x=xx,y=d$stress3_degC_above_thres_clim_max_mw) } 
+rm(s,d,xx)
+
+
+
+# ---
+# Stress method 4
+# ---
+
+# There are two columns in tempdata_stress4 that I could integrate:
+# stress4_dev: stress factor * deviations from mean
+# stress4_abs: stress factor * temperature
+
+for(s in 1:length(site_vector)){ # now we integrate these vals, for each site..
+  d <- tempdata_stress4[tempdata_stress4$Site==site_vector[s],]
+  xx <- seq(from=1,
+            to=length(d$stress4_dev),
+            by=1)
+  # integrate stress*dev vals
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m4dev <-
+    trapz(x=xx,y=d$stress4_dev) 
+  
+  # integrate stress*temp vals
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m4abs <-
+    trapz(x=xx,y=d$stress4_abs) 
+  
+  # length of time series
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m4 <- 
+    length(d$stress4_dev)} 
+rm(s,d,xx)
+
+
+# -------------------------------------------
+# Standardize integrals (divide by days in ts)
+# -------------------------------------------
+
+site_stress_values$integral_m1_S <- # stress1
+  round(site_stress_values$integral_m1 / site_stress_values$days_in_ts_m1,digits=2)
+
+site_stress_values$integral_m2_S <- #stress2
+  round(site_stress_values$integral_m2 / site_stress_values$days_in_ts_m2,digits=2)
+
+site_stress_values$integral_m3a_S <- #stress3: minus, integrate
+  round(site_stress_values$integral_m3a / site_stress_values$days_in_ts_m3,digits=2)
+
+site_stress_values$integral_m3b_S <- #stress3: integrate, minus
+  round(site_stress_values$integral_m3b / site_stress_values$days_in_ts_m3,digits=2)
+
+site_stress_values$integral_m4dev_S <- #stress4: deviations
+  round(site_stress_values$integral_m4dev / site_stress_values$days_in_ts_m4,digits=2)
+
+site_stress_values$integral_m4abs_S <- #stress4: absolute temp
+  round(site_stress_values$integral_m4abs / site_stress_values$days_in_ts_m4,digits=2)
+
+
+
+
+```
+
+
+
+
+
+
+### Fig 2) 4 panel figure showing stress criteria demonstration
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+
+# ------------------------------------------------------------------
+
+
+fs = 5    # font size for x and y axis labels and ticks
+tmin = 13 # min value on y axis in temp plots
+tmax = 24 # max value on y axis in temp plots
+# panel 1
+
+# ---
+# daily T
+
+s = 14
+d <- tempdata_stress1[tempdata_stress1$Site == site_vector[s],]
+p2a <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature),color="darkgrey") +
+    ylab(expression("Daily " ~degree*C)) +
+    xlab("") +
+    scale_y_continuous(limits=c(tmin,tmax),
+                       breaks = c(14,16,18,20,22)) +
+    theme_classic() +
+    theme(legend.position="none",
+          plot.margin = unit(c(0,0,0,0), "cm"),
+          axis.text.x=element_blank(),
+          axis.title.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.text=element_text(size=fs),
+          axis.title=element_text(size=fs),
+          panel.background = element_blank()) +
+    annotate("text",x=as.Date("2018-03-15"),y=24,
+             hjust=0.5,vjust=1,
+             color="black",label="Stress Method 1",size=fs+2) 
+
+
+# ----
+# Dtress
+
+p2b <- ggplot(data=d) +
+    geom_point(aes(x=Date,y=Dstress)) +
+    geom_line(aes(x=Date,y=Dstress)) +
+    ylab(expression("Daily Stress " ~degree*C)) + xlab("") +
+    ylim(-1.28,1.25) +
+    theme_classic() +
+    theme(plot.margin = unit(c(0,0,0,0), "cm"),
+          axis.text=element_text(size=fs),
+          axis.title=element_text(size=fs)) +
+    geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed') +
+  # add blue text and arrow
+  annotate("text", x=as.Date("2017-10-10"), hjust=0, color="dodgerblue",
+             y=0.9, label=expression(paste(italic("Cooler than expected"))), 
+             size=3, parse=TRUE) +
+  geom_segment(aes(x = as.Date("2017-10-01"), y = 0.4, xend = as.Date("2017-10-01"), yend = 1),
+               arrow = arrow(length = unit(0.5, "cm"),type="closed"), 
+               color="dodgerblue", lineend = "round", linejoin = "mitre",size=1) +
+  # add orange text and arrow
+  annotate("text", x=as.Date("2017-10-10"), hjust=0, color="orange",
+             y=-0.9, label=expression(paste(italic("Warmer than expected"))), 
+             size=3, parse=TRUE) +
+  geom_segment(aes(x = as.Date("2017-10-01"), y = -0.4, xend = as.Date("2017-10-01"), yend = -1),
+               arrow = arrow(length = unit(0.5, "cm"),type="closed"), 
+               color="orange", lineend = "round", linejoin = "mitre",size=1)
+
+
+
+panel1 <- plot_grid(p2a, p2b, labels=c("a","b"), align = "v", nrow = 2, rel_heights = c(1/2, 1/2))
+panel1
+
+# -----------------------------------------------------------------------------
+# panel 2: degree heating days + threshold
+s = 14
+d <- tempdata_stress2[tempdata_stress2$Site == site_vector[s],]
+
+p2c <- ggplot(data=d) +
+  geom_line(aes(x=Date,y=Temperature),color="grey") +
+  geom_line(aes(x=Date,y=climatology),color="black") +
+  ylab(expression("Daily " ~degree*C)) + xlab("") +
+  scale_y_continuous(limits=c(tmin,tmax),breaks = c(14,16,18,20,22)) +
+  theme_classic() +
+  geom_abline(slope=0,intercept = d$threshold[1],color="red",linetype='dashed') +
+  theme(legend.position="none",
+          plot.margin = unit(c(0,0,0,0), "cm"),
+          axis.text.x=element_blank(),
+          axis.title.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.text=element_text(size=fs),
+          axis.title=element_text(size=fs),
+          panel.background = element_blank()) +
+  annotate("text",x=as.Date("2018-03-15"),y=24,
+             hjust=0.5,vjust=1,
+             color="black",label="Stress Method 2",size=fs+2) 
+  
+
+
+d$Datesmooth <- seq(as.Date("2017-10-01"), by = "day", length.out = length(d$Date))
+p2d <- ggplot(data=d) +
+  geom_bar(aes(x=Datesmooth,y=stress2_degC_above_threshold),stat="identity") +
+  ylab(expression(degree*C~ " > Thermal Limit")) + xlab("") +
+  ylim(c(0,0.2)) +
+  theme_classic() +
+  theme(plot.margin = unit(c(0,0,0,0), "cm"),
+        axis.text=element_text(size=fs),
+        axis.title=element_text(size=fs),
+        panel.background = element_blank()) 
+thresAUC
+
+# panel2 <- thres + inset_element(thresAUC, left = 0.1, bottom = 0.7, right = 0.7, top = 1.04) + plot_annotation(tag_levels = list(c('c)', 'd)')))
+
+panel2 <- plot_grid(p2c, p2d, labels=c("c","d"), align = "v", nrow = 2, rel_heights = c(1/2, 1/2))
+panel2
+
+# -----------------------------------------------------------------------------
+# panel 3: combo
+s=14
+d <- tempdata_stress3[tempdata_stress3$Site == site_vector[s],]
+d$Datesmooth <- seq(as.Date("2017-10-01"), by = "day", length.out = length(d$Date))
+
+
+p2e <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature),color="grey") +
+    geom_line(aes(x=Date,y=stress3_climatology_max_mw),color="black") +
+    ylab(expression("Daily " ~degree*C)) + xlab("date") +
+    scale_y_continuous(limits=c(13,24),breaks = c(14,16,18,20,22)) +
+    theme_classic() +
+    geom_abline(slope=0,intercept = d$threshold[1],color="red",linetype='dashed') +
+  theme(legend.position="none",
+          plot.margin = unit(c(0,0,0,0), "cm"),
+          axis.text.x=element_blank(),
+          axis.title.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.text=element_text(size=fs),
+          axis.title=element_text(size=fs),
+          panel.background = element_blank()) +
+  annotate("text",x=as.Date("2018-03-15"),y=24,
+             hjust=0.5,vjust=1,
+             color="black",label="Stress Method 3",size=fs+2) 
+
+p2f <- ggplot(data=d) +
+  geom_bar(aes(x=Datesmooth,
+               y=degC_above_minus_shtvar),stat="identity") +
+  #ylab(expression("("~M[ij]~"-"~L[j]~") - "~s1[ij]~","~degree*C)) +
+  ylab(expression("Stress"~degree*C)) +
+  xlab("") +
+  ylim(0,2.6) +
+  theme_classic() +
+  theme(legend.position="none",
+          plot.margin = unit(c(0,0,0,0), "cm"),
+          axis.text=element_text(size=fs),
+          axis.title=element_text(size=fs),
+          panel.background = element_blank())
+
+  
+# panel3 <- combo + inset_element(comboAUC, left = 0.14, bottom = 0.65, right = 0.72, top = 1.04) + plot_annotation(tag_levels = list(c('e)', 'f)')))
+# panel3
+panel3 <- plot_grid(p2e, p2f, labels=c("e","f"), align = "v", nrow = 2, rel_heights = c(1/2, 1/2))
+panel3
+
+# -----------------------------------------------------------------------------
+# panel 4: thermal performance curve
+
+s=14
+d <- tempdata_stress4[tempdata_stress4$Site == site_vector[s],]
+d$Datesmooth <- seq(as.Date("2017-10-01"), by = "day", length.out = length(d$Date))
+
+
+p2g <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature),color="grey") +
+    ylab(expression("Daily " ~degree*C)) + xlab("") +
+    scale_y_continuous(limits=c(tmin,tmax),breaks = c(14,16,18,20,22)) +
+    theme_classic() +
+    theme(legend.position="none",
+          plot.margin = unit(c(0,0,0,0), "cm"),
+          axis.text.x=element_blank(),
+          axis.title.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.text=element_text(size=5),
+          axis.title=element_text(size=5),
+          panel.background = element_blank()) +
+  annotate("text",x=as.Date("2018-03-15"),y=24,
+             hjust=0.5,vjust=1,
+             color="black",label="Stress Method 4",size=fs+2) 
+
+p2h <- ggplot(data=d) +
+  geom_bar(aes(x=Datesmooth,
+               y=stress4_dev),stat="identity") +
+  ylab("Stress"~degree*C) + xlab("") +
+  #ylim(0,2.6) +
+  theme_classic() +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        axis.text=element_text(size=5),
+        axis.title=element_text(size=5))
+  #theme(panel.border = element_rect(color = "black", fill=NA))
+
+
+# panel4 <- temp + inset_element(tpcAUC, left = 0.14, bottom = 0.65, right = 0.72, top = 1.04) + plot_annotation(tag_levels = list(c('g)', 'h)')))
+# panel4
+panel4 <- plot_grid(p2g, p2h, labels=c("g","h"), align = "v", nrow = 2, rel_heights = c(1/2,1/2))
+panel4
+
+fig2 <- plot_grid(panel1,panel2,panel3,panel4,nrow=2,labels=NULL)
+fig2
+# -----------------------------------------------------------------------------
+# export panels
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/panel1.tiff", 
+     res = 300, units="in",height=4,width=5)
+panel1
+dev.off()  
+
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/panel2.tiff", 
+     res = 300, units="in",height=4,width=5)
+panel2
+dev.off()  
+
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/panel3.tiff", 
+     res = 300, units="in",height=4,width=5)
+panel3
+dev.off()  
+
+tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/panel4.tiff", 
+     res = 300, units="in",height=4,width=5)
+panel4
+dev.off()  
+
+```
+
+
+All plots for supplemental - needs editing based on panel plots above
+```{r}
+# ---
+# All plots: Dstress & Temp
+# ---
+p <- as.list(rep(NA,length=length(site_vector)))
+names(p) <- site_vector
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_point(aes(x=Date,y=Dstress)) +
+    geom_line(aes(x=Date,y=Dstress)) +
+    #ggtitle("") +
+    ylab("Degree C") + xlab("") +
+    ylim(-1.5,1.5) +
+    theme_classic() +
+    geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed') +
+    annotate("text", x=as.Date("2017-11-05"), hjust=0, color="lightblue",
+             y=1, label=expression(paste(italic("Cooler than expected"))), parse=TRUE) +
+    annotate("text", x=as.Date("2017-11-05"), hjust=0, color="orange",
+             y=-1, label=expression(paste(italic("Warmer than expected"))), parse=TRUE)
+}
+p1 <- p
+rm(p)
+plot_grid(p1[["MorroPrieto"]],p1[["PuntaPrieta"]],nrow=2)
+
+
+
+p <- as.list(rep(NA,length=length(site_vector)))
+names(p) <- site_vector
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature),color="darkgrey") +
+    #geom_line(aes(x=Date,y=climatology,color="climatology")) +
+    ggtitle() +
+    ylab("Daily Temperature") + xlab("date") +
+    ylim(13,25) +
+    theme_classic() +
+    annotate("text",x=as.Date("2017-10-05"),y=24,hjust=0,color="black",
+             label=site_vector[s]) +
+    theme(legend.position="none")
+}
+p2 <- p
+rm(p)
+plot_grid(p2[["MorroPrieto"]],p2[["PuntaPrieta"]],labels=c("a)","b)"),nrow=2)
+
+plot_grid(p2[["PuntaPrieta"]],p1[["PuntaPrieta"]],nrow=2)
+
+
+
+#do.call(grid.arrange,c(p,ncol=2))
+```
+
+
+
+## Method 2: degree-heating days
+
+Method 2 assumes that stress accumulates when abalone experience temperatures above an upper thermal limit. We assume there is some local adaptation among sites such that extreme temperatures experienced at one site may not be considered extreme, and therefore stressful, at another site. We define site-specific upper thermal limits as one standard deviation above the long-term mean of temperatures observed at that site. This method is published in Boch et al. (2018).
+
+Instead of using daily temperature, we use each site's climatology to examine stress experienced above the upper thermal limit. Climatology is calculated using the loess function in R with a 90 day smoothing window. In the time series plots below, daily temperture (grey line), climatology (red line), and upper thermal limit (orange dashed line) are plotted for each site. 
+
+Total stress at each site is the integral of temperatures greater than the site-specific thermal limit (deg C day). Just as in method 1, we then standaridze the integrals by the number of days in time series per site. Units of standardized integral values are deg C day. 
+
+Boch, C. A., Micheli, F., AlNajjar, M., Monismith, S. G., Beers, J. M., Bonilla, J. C., ... & Woodson, C. B. (2018). Local oceanographic variability influences the performance of juvenile abalone under climate change. Scientific reports, 8(1), 1-12.
+
+
+### Fig 2a) Climatology & temperature threshold
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+
+p <- as.list(rep(NA,length=length(site_vector)))
+names(p) <- site_vector
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature),color="grey") +
+    geom_line(aes(x=Date,y=climatology,color="climatology")) +
+    ggtitle(paste(site_vector[s])) +
+    ylab("Daily Temperature") + xlab("date") +
+    ylim(8,27) +
+    theme_bw() +
+    geom_abline(slope=0,intercept = d$threshold[1],color="darkorange",linetype='dashed')
+}
+plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
+
+#do.call(grid.arrange,c(p,ncol=2))
+```
+
+### Fig 2b) Daily stress values
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+
+p <- as.list(rep(NA,length=length(site_vector)))
+names(p) <- site_vector
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_bar(aes(x=Date,y=degC_above_threshold),stat="identity") +
+    ggtitle(paste(site_vector[s]," (stress = ",
+            auc_method2[auc_method2$Site==site_vector[s],]$integral_m2_S,
+            " deg C day)",sep="")) +
+    ylab("Deg C above threshold") + xlab("date") +
+    ylim(0,2.6) +
+    theme_bw() 
+}
+plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
+
+#do.call(grid.arrange,c(p,ncol=2))
+```
+
+## Method 3: (climatology of potential max temp) - (short-term variability)
+
+The goal of this method is to combine stress of thermal limits and stress associated with short-term variation in temperature. Short-term variability can be considered 'good' if temperatures are high because the variation in temperature has a cooling off effect. But there is still some stress associated with rapidly changing temps. 
+
+* In this menthod we calculate the potential maximum climatology. Climatology of the maximum values over a moving window. 
+
+* Then, we integrate the maximum climatology values above the site-specific thermal threshold. And standardize this integral by the number of days in temperature time series.
+
+* Short-term variability is considered 'good' in this case and therefore reducing stress, so we subtract the amount of short-term variability stress as calculated in method 1 from the standardized integrals. 
+
+### Fig 3a) (max climatology) - (short-term variability stress)
+
+Variability is a good thing when temperature is high. Abalone are 'cooled off'. 
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+
+p <- as.list(rep(NA,length=length(site_vector)))
+names(p) <- site_vector
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=Temperature),color="grey") +
+    geom_line(aes(x=Date,y=climatology_max_mw,color="climatology\n(max)")) +
+    ggtitle(paste(site_vector[s])) +
+    ylab("Daily Temperature") + xlab("date") +
+    ylim(8,27) +
+    theme_bw() +
+    geom_abline(slope=0,intercept = d$threshold[1],color="darkorange",linetype='dashed')
+}
+plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
+
+#do.call(grid.arrange,c(p,ncol=2))
+```
+
+### Fig 3b) Daily stress values
+
+Stress = (deg C of max climatology above threshold) - (stress due to short-term variability)
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+# plot ts of method 3
+
+p <- as.list(rep(NA,length=length(site_vector)))
+names(p) <- site_vector
+for(s in 1:length(site_vector)){
+  d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+  p[[s]] <- ggplot(data=d) +
+    geom_bar(aes(x=Date,y=degC_above_threshold_clim_max_mw_minus_Dstress),stat="identity") +
+    ggtitle(paste(site_vector[s]," (stress = ",
+            auc_method3max_mw[auc_method3max_mw$Site==site_vector[s],]$integral_S_minus_shtvar_S_mw,
+            " deg C day)",sep="")) +
+    ylab("Deg C above threshold") + xlab("date") +
+    ylim(0,2.6) +
+    theme_bw() 
+}
+plot_grid(p[["MorroPrieto"]],p[["PuntaPrieta"]],nrow=2)
+
+
+```
+
+
+### Comparing 3 stress values
+
+* Method 1: Short-term variability 
+
+* Method 2: Cumulative temp of mean climatology above thermal threshold 
+
+* Method 3: (max climatology) - (short-term variability)
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=6,fig.height=5}
+
+locations <- read.csv("C:/Users/Mikaela/Documents/GitHub/natividad/data/Sensor_Locations_map.csv")
+names(locations)[1] <- "Site"
+locations <- left_join(locations,auc_method1,by='Site')
+locations <- left_join(locations,auc_method2,by='Site')
+
+# add columns from new method 3
+locations <- left_join(locations, auc_method3max,by='Site')
+locations <- left_join(locations, auc_method3max_mw,by='Site')
+
+# subtract: new method 3(s) - short term var
+locations$m3max_minus_stv <-    locations$integral_m3max_S - locations$integral_m1_S
+locations$m3max_mw_minus_stv <- locations$integral_m3max_mw_S - locations$integral_m1_S
+
+# rename columns to make sense of maps
+colnames(locations)[colnames(locations) == "integral_m1_S"] <- "Short_term_var"
+colnames(locations)[colnames(locations) == "integral_m2_S"] <- "Clim_thermal_limit"
+colnames(locations)[colnames(locations) == "m3max_mw_minus_stv"] <- "Clim_mw_thermal_limit"
+
+
+loc1 <- locations
+loc1$Site <- factor(loc1$Site,levels=loc1[order(loc1$Latitude),]$Site)
+# locations_1 <- loc1 %>% 
+#   select(Site,Latitude,Longtitude,Short_term_var,Clim_thermal_limit,m1_add_m2) %>%
+#   gather('method','value',4:6)
+locations_1 <- loc1 %>% 
+  select(Site,Latitude,Longtitude,Short_term_var,Clim_thermal_limit,Clim_mw_thermal_limit) %>%
+  gather('method','value',4:6)
+
+#locations_1 <- locations_1[locations_1$Site %in% c('PuntaPrieta','MorroPrieto')]
+locations_1$method <- factor(locations_1$method, levels = c("Short_term_var", "Clim_thermal_limit", "Clim_mw_thermal_limit"))
+
+p1 <- ggplot(data=locations_1[locations_1$Site %in% c("MorroPrieto","PuntaPrieta"),],aes(x=Site,y=value,fill=method)) +
+  geom_bar(stat="identity",position = "dodge") +
+  scale_fill_brewer(type="qual", palette = "Paired") +
+  #xlab("Sites - in order by Latitude") +
+  xlab("") +
+  ylab("Stress (deg C day)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust =1,hjust=0.9)) +
+  ggtitle("Method 1) Light blue : short term variability \nMethod 2) Dark blue: climatology (mean) above thermal limit\nMethod 3) Green: (max climatology) - (short term var) ")
+
+p1
+```
+
+
+
+## Method 4: Thermal performance curve 
+
+We assume abalone operate under a specific thermal performance curve with a thermal limit (Tmax). The thermal response curve is adapted from Barneche et al 2014. The optimal temperature is set to the mean of the data from a site. We then normalize and invert the thermal performance curve so that the stress factor is zero at the optimal temperature and one above Tmax. Then to calculate stress, the difference between the optimal temperature and the temperature at each time is multiplied by the stress factor. We then take the absolute value and integrate to get an overall stress in deg C days.
+
+Barneche, D. R., Kulbicki, M., Floeter, S. R., Friedlander, A. M., Maina, J., & Allen, A. P. (2014). Scaling metabolism from individuals to reef‐fish communities at broad spatial scales. Ecology Letters, 17(9), 1067-1076.
+
+
+
+# Monitoring Data
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+tdf <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/0001_2006_to_2018_All_locations_invert.csv",stringsAsFactors = FALSE)
+tdf <- tdf %>% filter(Species == "fulgens") #just green abalone
+tdf <- tdf[!is.na(tdf$Latitude),]
+tdf <- tdf[!is.na(tdf$Longitude),]
+
+tdf <- tdf %>% add_count(Site,Year,Month) #for each site, in each year-month, count number of transects
+tdf <- tdf %>% group_by(Site,Year,Month) %>%
+  mutate(avgAbundance=mean(TotalAbundance)) %>%
+  mutate(varAbundance=var(TotalAbundance)) %>%
+  mutate(sdAbundance=sd(TotalAbundance))
+
+
+
+# Plot site locations of monitoring data and temp sites.
+
+
+
+
+# get the shapefile
+f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/countries.shp")
+
+# filter tdf to get only sites and lat and long
+locationsTemp <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+names(locationsTemp)[1] <- "Site"
+locationsTemp
+
+map1<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  #geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Short_term_var),size=5) +
+  # temp data
+  geom_point(data=locationsTemp,aes(x=Longtitude,y=Latitude),color="blue") +
+  geom_text_repel(data=locationsTemp,
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "blue",
+                  color="blue",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  # transect data
+  geom_point(data=tdf,aes(x=Longitude,y=Latitude),color="green") +
+  # geom_text_repel(data=tdf,
+  #                 aes(x=Longitude, y=Latitude,label = Site),
+  #                 segment.color = "green",
+  #                 color="green",
+  #                 size = 4,
+  #                 na.rm = TRUE,
+  #                 nudge_x = -0.2,
+  #                 box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Temp site locations")
+
+map1
+
+# ---
+# map just the transect sites
+# reduce tdf to only 
+
+map2<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(min(tdf$Latitude),max(tdf$Latitude)),
+           xlim=c(min(tdf$Longitude),max(tdf$Longitude))) +
+  geom_point(data=tdf,aes(x=Longitude,y=Latitude,color=Site)) +
+  geom_point(data=locationsTemp,aes(x=Longtitude,y=Latitude),color="black") +
+  geom_text_repel(data=locationsTemp[!locationsTemp$Site %in% c("VanDamme","Monterey","LaJolla"),],
+                  aes(x=Longtitude, y=Latitude,label = Site),
+                  segment.color = "grey30",
+                  color="grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Site locations")
+map2
+
+```
+
+

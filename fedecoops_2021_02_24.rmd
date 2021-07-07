@@ -1,0 +1,805 @@
+---
+title: "4 stress methods at fedecoop sites"
+author: "Mikaela Provost, Brock Woodson, Giulio De Leo, Fiorenza Micheli"
+date: "02/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggrepel)
+library(pracma)
+library(viridis)
+library(lemon)
+library(lubridate)
+library(zoo)
+library(tidyverse)
+library(stats)
+library(sf)
+library(viridis)
+
+# load functions --> ***** CHECK for MG or MP *****
+source("C:/Users/Mikaela/Documents/GitHub/natividad/functions.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress1_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress2_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress3_function.r")
+source("C:/Users/Mikaela/Documents/GitHub/natividad/stress_functions/stress4_function.r")
+
+```
+
+  
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# -- Read in bottom data -- #
+
+d <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/001_FEDECOOP_MS_DATA.csv",stringsAsFactors = FALSE)
+d$Date <- as.Date(d$UTC_DateTime,format="%Y-%m-%d") # create date-only column
+bottomall <- d %>% 
+  group_by(Site,Date) %>% 
+  sample_n(1) %>% 
+  select(Site,Temperature,Date)# randomly select temp per day
+bottomall <- bottomall %>% mutate(year = year(Date)) %>% mutate(month=month(Date))
+#names(bottomall)[names(bottomall)=="Temperature"] <- "temp_bottom"
+rm(d)
+site_vector <- unique(bottomall$Site)
+
+
+# testing --------
+
+#bottomall$Temperature <- bottomall$Temperature*2
+
+# n_occur <- data.frame(table(bottomall[bottomall$Site==site_vector[9],]$Date))
+# n_occur[n_occur$Freq >1,]
+
+# check number of weeks I have for each site
+# and check if the week numbers throughout the year also match
+# (I want to look at stress for comparible weeks)
+#head(bottomall)
+#table(bottomall$Site,bottomall$month)
+# in general: sites cover almost the same time range
+
+```
+
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+
+# -------------------------------------------
+# Data frame to store stress values per site per method
+# -------------------------------------------
+
+site_stress_values <- data.frame(
+  Site = site_vector,
+    # values for method 1: variability
+  integral_m1 = rep(NA,length=length(site_vector)),
+  integral_m1_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m1 = rep(NA,length=length(site_vector)),
+    # values for method 2: thresholds
+  integral_m2 = rep(NA,length=length(site_vector)),
+  integral_m2_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m2 = rep(NA,length=length(site_vector)),
+    
+    # values for method 3: combo
+  integral_m3a = rep(NA,length=length(site_vector)),
+  integral_m3a_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m3 = rep(NA,length=length(site_vector)),
+  
+  integral_m3b = rep(NA,length=length(site_vector)),
+  integral_m3b_S = rep(NA,length=length(site_vector)),
+  
+    # values for method 4: curve
+  integral_m4dev = rep(NA,length=length(site_vector)),
+  integral_m4dev_S = rep(NA,length=length(site_vector)),
+  
+  integral_m4abs = rep(NA,length=length(site_vector)),
+  integral_m4abs_S = rep(NA,length=length(site_vector)),
+  days_in_ts_m4 = rep(NA,length=length(site_vector)))
+
+
+
+
+# -------------------------------------------
+# Method 1: short-term variability, integrate short-term variability curve 
+# -------------------------------------------
+# moving window to calculate expected T
+
+wts <- c(0.1,0.2,0.4,0.8)
+wts <- wts/sum(wts) #make sure weights add up to 1
+wtsp <- round(wts*100,digits=0)
+
+tempdata_stress1 <- stress1_fun(tempdata=bottomall,
+                                site_vector=site_vector)
+
+
+
+
+# -------------------------------------------
+# Method 2: integrate temperature curve for when temp is >site-specific threshold
+# -------------------------------------------
+
+tempdata_stress2 <- stress2_fun(tempdata=bottomall,
+                                site_vector=site_vector)
+
+
+
+# -------------------------------------------
+# Method 3: climatology of potential max temp - short term variability (cooling off effect)
+# -------------------------------------------
+
+
+tempdata_stress3 <- stress3_fun(tempdata=bottomall,
+                                site_vector = site_vector)
+
+
+
+
+# -------------------------------------------
+# Method 4: thermal performance curve
+# -------------------------------------------
+
+# define params
+# alpha=0.75
+# E_r=0.65
+# E_i=2.035
+# k=8.62e-5
+# Tmax=25
+
+# stress4_fun returns a list with 2 data frames: tempdata with stress4 vals
+# and curves which is the performance & inverted perf curves
+hold <- stress4_fun(tempdata=bottomall,site_vector = site_vector,
+            alpha=2*0.75,E_r=2*0.65,E_i=2*2.035,k=2*8.62e-5,Tmax=2*25)
+tempdata_stress4 <- hold$tempdata_stress4
+curves <- hold$curves
+rm(hold)
+
+
+
+
+# -------------------------------------------
+# Integrals
+# -------------------------------------------
+
+
+# ---
+# Stress method 1
+# ---
+for(s in 1:length(site_vector)){ #for each site
+  d <- tempdata_stress1[tempdata_stress1$Site==site_vector[s],]
+  
+  xx <- seq(from=1,
+            to=length(d$stress1_pos_vals),
+            by=1)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m1 <-
+    trapz(x=xx,y=d$stress1_pos_vals) # integrate abs(stress vals)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m1 <- 
+    length(d$stress1_pos_vals)} # length of time series
+
+rm(s,d,xx) 
+
+
+# ---
+# Stress method 2
+# ---
+for(s in 1:length(site_vector)){ #for each site
+  d <- tempdata_stress2[tempdata_stress2$Site==site_vector[s],]
+  
+  xx <- seq(from=1,
+            to=length(d$stress2_degC_above_threshold),
+            by=1)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m2 <-
+    trapz(x=xx,y=d$stress2_degC_above_threshold) # integrate abs(stress vals)
+  
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m2 <- 
+    length(d$stress2_degC_above_threshold)} # length of time series
+rm(s,d,xx) 
+
+
+# ---
+# Stress method 3
+# ---
+
+# 2 methods:
+# (1) subtract daily values, then integrate 
+# (2) subtract standardized integrals
+
+
+# (1) subtract daily values, then integrate 
+
+tempdata_stress3$degC_above_minus_shtvar <- rep(NA,length(tempdata_stress3$Site))
+for(s in 1:length(site_vector)){ # for each site...
+  
+  tempdata_stress3[tempdata_stress3$Site==site_vector[s],]$degC_above_minus_shtvar <- 
+    # take the daily degC above threshold...
+    tempdata_stress3[tempdata_stress3$Site==site_vector[s],]$stress3_degC_above_thres_clim_max_mw -
+    # and minus the daily stress from short term variation
+    tempdata_stress1[tempdata_stress1$Site==site_vector[s],]$stress1_pos_vals
+}
+rm(s)
+
+for(s in 1:length(site_vector)){ # now we integrate these vals, for each site..
+  d <- tempdata_stress3[tempdata_stress3$Site==site_vector[s],]
+  xx <- seq(from=1,
+            to=length(d$degC_above_minus_shtvar),
+            by=1)
+  # integrate abs(stress vals)
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m3a <-
+    trapz(x=xx,y=d$degC_above_minus_shtvar) 
+  
+  # length of time series
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m3 <- 
+    length(d$degC_above_minus_shtvar)} 
+rm(s,d,xx)
+
+
+# (2) subtract standardized integrals
+for(s in 1:length(site_vector)){ # now we integrate these vals, for each site..
+  d <- tempdata_stress3[tempdata_stress3$Site==site_vector[s],]
+  xx <- seq(from=1,
+            to=length(d$stress3_degC_above_thres_clim_max_mw),
+            by=1)
+  # integrate abs(stress vals)
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m3b <-
+    trapz(x=xx,y=d$stress3_degC_above_thres_clim_max_mw) } 
+rm(s,d,xx)
+
+
+
+# ---
+# Stress method 4
+# ---
+
+# There are two columns in tempdata_stress4 that I could integrate:
+# stress4_dev: stress factor * deviations from mean
+# stress4_abs: stress factor * temperature
+
+for(s in 1:length(site_vector)){ # now we integrate these vals, for each site..
+  d <- tempdata_stress4[tempdata_stress4$Site==site_vector[s],]
+  xx <- seq(from=1,
+            to=length(d$stress4_dev),
+            by=1)
+  # integrate stress*dev vals
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m4dev <-
+    trapz(x=xx,y=d$stress4_dev) 
+  
+  # integrate stress*temp vals
+  site_stress_values[site_stress_values$Site == site_vector[s],]$integral_m4abs <-
+    trapz(x=xx,y=d$stress4_abs) 
+  
+  # length of time series
+  site_stress_values[site_stress_values$Site == site_vector[s],]$days_in_ts_m4 <- 
+    length(d$stress4_dev)} 
+rm(s,d,xx)
+
+
+# -------------------------------------------
+# Standardize integrals (divide by days in ts)
+# -------------------------------------------
+
+site_stress_values$integral_m1_S <- # stress1
+  round(site_stress_values$integral_m1 / site_stress_values$days_in_ts_m1,digits=2)
+
+site_stress_values$integral_m2_S <- #stress2
+  round(site_stress_values$integral_m2 / site_stress_values$days_in_ts_m2,digits=2)
+
+site_stress_values$integral_m3a_S <- #stress3: minus, integrate
+  round(site_stress_values$integral_m3a / site_stress_values$days_in_ts_m3,digits=2)
+
+site_stress_values$integral_m3b_S <- #stress3: integrate, minus
+  round(site_stress_values$integral_m3b / site_stress_values$days_in_ts_m3,digits=2)
+
+site_stress_values$integral_m4dev_S <- #stress4: deviations
+  round(site_stress_values$integral_m4dev / site_stress_values$days_in_ts_m4,digits=2)
+
+site_stress_values$integral_m4abs_S <- #stress4: absolute temp
+  round(site_stress_values$integral_m4abs / site_stress_values$days_in_ts_m4,digits=2)
+
+
+
+
+```
+
+## Method 1: short-term variability 
+
+This method assumes that organisms experience thermal stress when the temperature they experience differs from the temperature they are acclimatized to. Abalone experience more stress when there is a greater difference between experienced and expected temperature on each day. Using a moving window of 4 days, we fit a linear regression using daily temperature and use this to estimate the 'acclimatized' temperature for each day. Daily stress is the difference between the acclimatizated and expereinced temperature.
+
+In the time series plots below, color represents temperature abalone experienced above the site-specific thermal threshold (site-specific thermal limits are explained below). Units on the color bars is deg C.
+
+We use these daily stress measures to get a total stress for each site. Total stress per site is the integral of the absolute values. Because there were slight differences in the length of temperature time series among sites, we standardize each integral value by dividing it by the number of days at each site. The units of the standardized integral values are (deg C*day)/day --> deg C (?). These values are plotted in Map 1.
+
+```{r include=FALSE, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=11,fig.height=35}
+
+# p <- as.list(rep(NA,length=length(site_vector)))
+# for(s in 1:length(site_vector)){
+#   d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+#   p[[s]] <- ggplot(data=d) +
+#     geom_point(aes(x=Date,y=stress1_pos_vals)) +
+#     #scale_color_viridis(begin = 0,end = 1) +
+#     geom_line(aes(x=Date,y=stress1_pos_vals)) +
+#     ggtitle(paste(site_vector[s]," - ",
+#                   site_stress_values[site_stress_values$Site==site_vector[s],]$integral__m1_S,
+#                   "deg C day")) +
+#     ylab("abs(Expected T - Experienced T)") + xlab("date") +
+#     ylim(0,max(bottomall_stress$stress1_pos_vals)) +
+#     theme_bw() +
+#     geom_abline(slope=0,intercept = 0,color="grey",linetype='dashed')
+# }
+# 
+# do.call(grid.arrange,c(p,ncol=2))
+# rm(p)
+```
+
+
+## Method 2: cumulative temperature above thermal limit
+
+Method 2 assumes that stress accumulates when abalone experience temperatures above an upper thermal limit. We assume there is some local adaptation among sites such that extreme temperatures experienced at one site may not be considered extreme, and therefore stressful, at another site. We define site-specific upper thermal limits as one standard deviation above the long-term mean of temperatures observed at that site.
+
+Instead of using daily temperature, we use each site's climatology to examine stress experienced above the upper thermal limit. Climatology is calculated using the loess function in R with a 90 day smoothing window. In the time series plots below, daily temperture (blue line), climatology (red line), and upper thermal limit (orange dashed line) are plotted for each site. This method assumes that abalone experience when the red line (climatology) is above the orange dashed line (upper thermal limit).
+
+Total stress at each site is the integral of temperatures greater than the site-specific thermal limit (deg C * day). Just as in method 1, we then standaridze the integrals by the number of days per site. Units of standardized integral values are (deg C * day)/day. These values are plotted in Map 2.
+
+```{r include=FALSE,echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=11,fig.height=35}
+
+# p <- as.list(rep(NA,length=length(site_vector)))
+# for(s in 1:length(site_vector)){
+#   d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+#   p[[s]] <- ggplot(data=d) +
+#     geom_line(aes(x=Date,y=Temperature)) +
+#     geom_line(aes(x=Date,y=climatology,color="climatology")) +
+#     ggtitle(paste(site_vector[s]," - ",
+#                   site_stress_values[site_stress_values$Site==site_vector[s],]$integral__m2_S,
+#                   "deg C day"))  +
+#     ylab("Daily Temperature") + xlab("date") +
+#     ylim(8,27) +
+#     theme_bw() +
+#     geom_abline(slope=0,intercept = d$threshold[1],color="orange",linetype='dashed')
+# }
+# do.call(grid.arrange,c(p,ncol=2))
+# rm(p)
+```
+
+
+## Method 3: climatology of potential max - short-term variability
+
+The goal of this method is to combine stress of thermal limits and stress associated with short-terma variability. Short-term variability can be considered 'good' if temperatures are high, the variation temperature has a cooling off effect. But there is still some stress associated with rapidly changing temps. 
+
+* In this menthod we calculate the potential maximum climatology. Then, we integrate the maximum climatology values that cross the site-specific thermal threshold. And standardize them to the number of days in temperature time series.
+
+
+```{r include=FALSE,echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=11,fig.height=35}
+
+# p <- as.list(rep(NA,length=length(site_vector)))
+# for(s in 1:length(site_vector)){
+#   d <- bottomall_stress[bottomall_stress$Site == site_vector[s],]
+#   p[[s]] <- ggplot(data=d) +
+#     geom_line(aes(x=Date,y=Temperature)) +
+#     geom_line(aes(x=Date,y=stress3_climatology_max_mw,color="max climatology\n")) +
+#     ggtitle(paste(site_vector[s]," - ",
+#                   site_stress_values[site_stress_values$Site==site_vector[s],]$integral__m3_S,
+#                   "deg C day"))  +
+#     ylab("Daily Temperature") + xlab("date") +
+#     ylim(8,27) +
+#     theme_bw() +
+#     geom_abline(slope=0,intercept = d$threshold[1],color="orange",linetype='dashed')
+# }
+# do.call(grid.arrange,c(p,ncol=2))
+# rm(p)
+```
+
+## Method 4: Thermal Performance Curve
+
+### Stress curves at each site:
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=11,fig.height=35}
+p <- as.list(rep(NA,length=length(site_vector)))
+for(s in 1:length(site_vector)){
+  d <- curves[curves$Site==site_vector[s],]
+  d$index <- seq(from=1,to=length(d$Site),by=1)
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=index,y=stress)) +
+    ggtitle(paste(site_vector[s])) +
+    ylab("stress") + xlab("index") +
+    ylim(0,1) +
+    theme_bw()
+}
+do.call(grid.arrange,c(p,ncol=2))
+rm(p)
+```
+
+### Time series of stress values:
+
+Deviation values = daily stress factor * daily temp deviation from mean
+
+Absolute values = daily stress factor * daily temp
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=11,fig.height=35}
+p <- as.list(rep(NA,length=length(site_vector)))
+
+for(s in 1:length(site_vector)){
+  
+  d <- tempdata_stress4[tempdata_stress4$Site==site_vector[s],]
+
+  p[[s]] <- ggplot(data=d) +
+    geom_line(aes(x=Date,y=stress4_dev,color="stress factor * temp dev")) +
+    geom_line(aes(x=Date,y=stress4_abs,color="stress factor * temp")) +
+    geom_line(aes(x=Date,y=Temperature,color="Temp")) +
+    ggtitle(paste(site_vector[s]," (dev=",
+                  site_stress_values[site_stress_values$Site==site_vector[s],]$integral_m4dev_S,
+                  " C)"," (abs=",
+                  site_stress_values[site_stress_values$Site==site_vector[s],]$integral_m4abs_S,
+                  " C)",sep=""))  +
+    ylab("daily stress (C)\ndaily temp (C)") + xlab("") +
+    ylim(c(0,max(tempdata_stress4$Temperature))) +
+    theme_bw() +
+    theme(legend.title = element_blank()) 
+}
+do.call(grid.arrange,c(p,ncol=2))
+rm(p)
+```
+
+
+
+
+## Maps
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# get the shapefile
+f <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/FEDECOOP.shp")
+s <- st_read("C:/Users/Mikaela/Documents/GitHub/natividad/shapefiles/countries.shp")
+
+
+locations <- read.csv("C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/data/Sensor_Locations_map.csv")
+                       
+names(locations)[1] <- "Site"
+locations <- left_join(locations,site_stress_values,by='Site')
+
+# rename columns to make sense of maps
+colnames(locations)[colnames(locations) == "integral_m1_S"] <- "Stress1_Short_term_var"
+colnames(locations)[colnames(locations) == "integral_m2_S"] <- "Stress2_Thermal_limit"
+colnames(locations)[colnames(locations) == "integral_m3a_S"] <- "Stress3a_minus_integrate"
+colnames(locations)[colnames(locations) == "integral_m3b_S"] <- "Stress3a_integrate_minus"
+colnames(locations)[colnames(locations) == "integral_m4dev_S"] <- "Stress4a_deviations"
+colnames(locations)[colnames(locations) == "integral_m4abs_S"] <- "Stress4a_absolutetemp"
+
+
+
+p1<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Stress1_Short_term_var),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Stress1_Short_term_var),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 1: short-term variability (stress 1)") +
+  theme(legend.title = element_blank()) 
+
+p2<-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Stress2_Thermal_limit),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Stress2_Thermal_limit),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 2: thermal limits (stress 2)") +
+  theme(legend.title = element_blank()) 
+  
+
+p3 <-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Stress3a_minus_integrate),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Stress3a_minus_integrate),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 3: subtract daily stress then integrate (stress 3)") +
+  theme(legend.title = element_blank()) 
+
+
+p4 <-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Stress3a_integrate_minus),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Stress3a_integrate_minus),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 4: integrate then subtract standardized integrals (stress 3)") +
+  theme(legend.title = element_blank()) 
+
+p5 <-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Stress4a_deviations),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Stress4a_deviations),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+ 
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 5: thermal performance curve, deviations (stress 4)") +
+   theme(legend.title = element_blank()) 
+
+p6 <-ggplot() +
+  geom_sf(data=s) +
+  geom_sf(data=f,col='grey60',fill='grey',alpha=0.3) +
+  coord_sf(ylim=c(26,29), xlim=c(-116,-112.5)) +
+  geom_point(data=locations,aes(x=Longtitude,y=Latitude,color=Stress4a_absolutetemp),size=5) +
+  scale_color_viridis(direction = -1) +
+  geom_text_repel(data=locations[!locations$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Longtitude, y=Latitude,label = Site,color=Stress4a_absolutetemp),
+                  segment.color = "grey30",
+                  size = 4,
+                  na.rm = TRUE,
+                  nudge_x = -0.2,
+                  box.padding = 1) +
+  theme_bw() + xlab("") +ylab("") + ggtitle("Map 6: thermal performance curve, absolute temp (stress 4)") +
+  theme(legend.title=element_blank())
+
+
+
+```
+
+## Check Method 4 with Latitude
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE,fig.width=14,fig.height=8}
+Latcheck <- data.frame(
+  Site = site_vector,
+  meanT = rep(NA,length(site_vector)),
+  stdevT = rep(NA,length(site_vector)),
+  varT = rep(NA,length(site_vector)),
+  Lat= rep(NA,length(site_vector))
+)
+
+for(s in 1:length(site_vector)){
+  Latcheck[Latcheck$Site==site_vector[s],]$meanT <- 
+    round(mean(bottomall[bottomall$Site==site_vector[s],]$Temperature),digits=2)
+  
+  Latcheck[Latcheck$Site==site_vector[s],]$stdevT <- 
+    round(sd(bottomall[bottomall$Site==site_vector[s],]$Temperature),digits=2)
+  
+  Latcheck[Latcheck$Site==site_vector[s],]$varT <- 
+    round(var(bottomall[bottomall$Site==site_vector[s],]$Temperature),digits=2)
+  
+  Latcheck[Latcheck$Site==site_vector[s],]$Lat <- 
+    locations[locations$Site==site_vector[s],]$Latitude
+}
+
+c1a <- ggplot(data=Latcheck,aes(x=Lat,y=meanT)) +
+  geom_point() +
+  theme_bw() +
+  scale_x_reverse() +
+  geom_text_repel(data=Latcheck,
+                  aes(x=Lat, y=meanT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+  
+c1b <- ggplot(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],aes(x=Lat,y=meanT)) +
+  geom_point() +
+  scale_x_reverse() +
+  theme_bw() +
+  geom_text_repel(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Lat, y=meanT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+
+c2a <- ggplot(data=Latcheck,aes(x=Lat,y=stdevT)) +
+  geom_point() +
+  scale_x_reverse() +
+  theme_bw() +
+  geom_text_repel(data=Latcheck,
+                  aes(x=Lat, y=stdevT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1)  
+  
+c2b <- ggplot(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],aes(x=Lat,y=stdevT)) +
+  geom_point() +
+  theme_bw() +
+  scale_x_reverse() +
+  geom_text_repel(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Lat, y=stdevT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+
+
+c3a <- ggplot(data=Latcheck,aes(x=Lat,y=varT)) +
+  geom_point() +
+  scale_x_reverse() +
+  theme_bw() +
+  geom_text_repel(data=Latcheck,
+                  aes(x=Lat, y=varT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+  
+c3b <- ggplot(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],aes(x=Lat,y=varT)) +
+  geom_point() +
+  theme_bw() +
+  scale_x_reverse() +
+  geom_text_repel(data=Latcheck[!Latcheck$Site %in% c('Monterey','VanDamme','Sportfish','LaJolla'),],
+                  aes(x=Lat, y=varT,label = Site),
+                  segment.color = "grey50",
+                  color="grey50",
+                  #size = 4,
+                  na.rm = TRUE,
+                  #nudge_x = -0.2,
+                  box.padding = 1) 
+
+plot_grid(c1a,c2a,c3a,
+          c1b,c2b,c3b,
+          nrow=2)
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=25}
+plot_grid(p1,p2,p3,p4,p5,p6,nrow=3)
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=16}
+# read in search time transect data
+st <- read.csv(file="C:/Users/Mikaela/Box Sync/Hopkins_postdoc/natividad/monitoringdata/2007_2018_size_frequency_untabled_search_time.csv", stringsAsFactors = FALSE, header = TRUE)
+
+
+transect_abundances <- st %>% group_by(Site,Year,ID) %>% summarise(transect_abund = sum(TotalAbundance))
+h <- st %>% group_by(ID) %>% slice(1) %>% select(ID,search_time)
+transect_cpue <- right_join(transect_abundances,h,by="ID")
+transect_cpue$cpue <- round(transect_cpue$transect_abund / transect_cpue$search_time,digits=2)
+transect_cpue$site_yr <- paste(transect_cpue$Site,"-",transect_cpue$Year)
+
+site_yr_cpue <- transect_cpue %>% group_by(Site,Year) %>% summarise(mu_cpue=mean(cpue),sd_cpue=sd(cpue))
+site_yr_cpue$site_yr <- paste(site_yr_cpue$Site,"-",site_yr_cpue$Year)
+
+# ggplot(data=transect_cpue) +
+#   geom_pointrange(mapping = aes(x = cpue, y = site_yr),
+#                   stat = "summary",
+#                   fun.data=mean_sdl) +
+#   
+#   xlab("cpue (number of abalone / minute searched)")
+
+ggplot(site_yr_cpue) + 
+  geom_pointrange(aes(y=site_yr,x=mu_cpue,
+                      xmin=mu_cpue-sd_cpue,
+                      xmax=mu_cpue+sd_cpue)) +
+  xlab("cpue (number of abalone / minute searched)\n(bars = +/- sd)") +
+  ggtitle("CPUE from timed search data")
+
+
+```
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.width=15, fig.height=13}
+
+mean_size <- st %>% 
+  group_by(Site,Year) %>%
+  summarise(mean_diam=mean(DiameterCorrected,na.rm = TRUE)) 
+
+
+st$site_yr <- paste(st$Site,"-",st$Year)
+st$site_zone <- paste(st$Site,"-",st$Zone)
+
+ggplot(data=st) +
+  geom_density(aes(x=DiameterCorrected)) +
+  geom_vline(aes(xintercept=mean_diam), data=mean_size,color="red",linetype="dashed") +
+  facet_grid(cols=vars(Site),rows=vars(Year)) +
+  theme_bw()
+
+```
+
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/stress1map.tiff", 
+#      units="in", width=7, height=6, res=300)
+# p1
+# dev.off()   
+# 
+# tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/stress2map.tiff", 
+#      units="in", width=7, height=6, res=300)
+# p2
+# dev.off()   
+# 
+# tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/stress3_minus_integrate_map.tiff", 
+#      units="in", width=7, height=6, res=300)
+# p3
+# dev.off()   
+# 
+# tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/stress3_integrate_minus_map.tiff", 
+#      units="in", width=7, height=6, res=300)
+# p4
+# dev.off()   
+# 
+# tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/stress4_dev_map.tiff", 
+#      units="in", width=7, height=6, res=300)
+# p5
+# dev.off()   
+# 
+# tiff(filename = "C:/Users/Mikaela/Documents/GitHub/natividad/figs/stress4_abs_map.tiff", 
+#      units="in", width=7, height=6, res=300)
+# p6
+# dev.off()   
+```
+
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# loc1 <- locations
+# loc1$Site <- factor(loc1$Site,levels=loc1[order(loc1$Latitude),]$Site)
+# locations_1 <- loc1 %>% 
+#   select(Site,Latitude,Longtitude,Short_term_var,Clim_thermal_limit,Threshold_minus_Variability, Thermal_Performance_Curve) %>%
+#   gather('method','value',4:7)
+# 
+# locations_1$method <- factor(locations_1$method, levels = c("Short_term_var", "Clim_thermal_limit", "Threshold_minus_Variability","Thermal_Performance_Curve"))
+# 
+# p5 <- ggplot(data=locations_1,aes(x=Site,y=value,fill=method)) +
+#   geom_bar(stat="identity",position = "dodge") +
+#   scale_fill_brewer(type="qual") +
+#   xlab("Sites - in order by Latitude") +
+#   ylab("Stress - (deg C * day)") +
+#   theme_bw() +
+#   theme(axis.text.x = element_text(angle = 45, vjust =1,hjust=0.9)) +
+#   ggtitle("")
+
+```
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, fig.height=4, fig.width=12}
+#p5
+```
